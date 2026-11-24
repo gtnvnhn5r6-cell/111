@@ -29,6 +29,7 @@
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.7 4.2" /><path d="M20 5v6h-6" /></symbol>
       <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M10 11v6M14 11v6" /></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.5" cy="6" r="1" fill="currentColor" stroke="none" /><circle cx="4.5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4.5" cy="18" r="1" fill="currentColor" stroke="none" /></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></symbol>
       <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" /><path d="m11 12 9-9M17 3l4 4-3 3-4-4" /></symbol>
       <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 19.2A1.4 1.4 0 0 0 4 21.3h16a1.4 1.4 0 0 0 1.2-2.1L12 3Z" /><path d="M12 9v5M12 17.5v.5" /></symbol>
@@ -107,6 +108,31 @@
           </div>
 
           <div class="top-actions">
+            <div class="toc-wrap">
+              <button
+                id="tocBtn"
+                class="icon-btn"
+                type="button"
+                aria-label="对话目录"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+                title="对话目录"
+              >
+                <svg class="icon"><use href="#i-list" /></svg>
+              </button>
+              <section id="tocPanel" class="toc-panel" role="dialog" aria-label="对话目录" hidden>
+                <div class="toc-head">
+                  <div class="toc-heading">
+                    <strong>对话目录</strong>
+                    <span id="tocCount" class="toc-count"></span>
+                  </div>
+                  <button id="tocClose" class="icon-btn toc-close" type="button" aria-label="关闭目录">
+                    <svg class="icon"><use href="#i-x" /></svg>
+                  </button>
+                </div>
+                <div id="tocList" class="toc-list"></div>
+              </section>
+            </div>
             <button id="themeBtn" class="icon-btn" type="button" aria-label="切换主题" title="切换主题">
               <svg class="icon theme-sun"><use href="#i-sun" /></svg>
               <svg class="icon theme-moon"><use href="#i-moon" /></svg>

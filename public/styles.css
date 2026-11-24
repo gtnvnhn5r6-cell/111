@@ -494,6 +494,130 @@ a {
   position: relative;
 }
 
+.toc-wrap {
+  position: relative;
+}
+
+.toc-panel {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  width: 322px;
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  z-index: 55;
+  animation: menuIn 0.16s ease;
+}
+
+.toc-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 10px 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.toc-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toc-heading strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.1px;
+}
+
+.toc-count {
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.toc-close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+.toc-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.toc-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.toc-item:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.toc-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.toc-index {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toc-item.active .toc-index {
+  background: var(--accent);
+  color: #fff;
+}
+
+.toc-text {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.toc-empty {
+  padding: 26px 14px;
+  color: var(--text-3);
+  text-align: center;
+  font-size: 12.5px;
+}
+
 .model-btn {
   display: flex;
   align-items: center;
@@ -1195,6 +1319,12 @@ html[data-theme="dark"] .orb-ring {
   opacity: 1;
 }
 
+@media (hover: none) {
+  .msg-actions {
+    opacity: 1;
+  }
+}
+
 .msg-action {
   display: flex;
   align-items: center;
@@ -1223,6 +1353,90 @@ html[data-theme="dark"] .orb-ring {
   margin-left: 6px;
   font-size: 11.5px;
   color: var(--text-3);
+}
+
+.msg.msg-flash .user-bubble {
+  animation: msgFlash 1.6s ease;
+}
+
+@keyframes msgFlash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(77, 107, 254, 0);
+  }
+  18% {
+    box-shadow: 0 0 0 4px rgba(77, 107, 254, 0.2);
+  }
+}
+
+.msg.editing .msg-actions {
+  display: none;
+}
+
+.edit-box {
+  width: 100%;
+  padding: 11px 12px 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.edit-input {
+  display: block;
+  width: 100%;
+  min-height: 66px;
+  max-height: 220px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.edit-hint {
+  margin-top: 7px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.edit-btn {
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.edit-btn:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.edit-btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.edit-btn.primary:hover {
+  background: var(--accent-strong);
+  color: #fff;
 }
 
 .typing-cursor {
@@ -2032,5 +2246,14 @@ html[data-theme="dark"] .toggle-chip[aria-pressed="true"] {
 
   .data-menu {
     width: min(288px, calc(100vw - 24px));
+  }
+
+  .toc-panel {
+    position: fixed;
+    top: 54px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-height: 65dvh;
   }
 }

@@ -198,6 +198,11 @@ const dom = {
   themeBtn: $('#themeBtn'),
   exportBtn: $('#exportBtn'),
   dataMenu: $('#dataMenu'),
+  tocBtn: $('#tocBtn'),
+  tocPanel: $('#tocPanel'),
+  tocList: $('#tocList'),
+  tocCount: $('#tocCount'),
+  tocClose: $('#tocClose'),
   zipInput: $('#zipInput'),
   exportZipBtn: $('#exportZipBtn'),
   importZipBtn: $('#importZipBtn'),
@@ -572,7 +577,9 @@ function renderActions(message, isLastAssistant) {
   if (message.role === 'user') {
     return `<button class="msg-action" type="button" data-action="copy">${icon(
       'i-copy',
-    )}<span>复制</span></button>`;
+    )}<span>复制</span></button><button class="msg-action" type="button" data-action="edit">${icon(
+      'i-edit',
+    )}<span>修改</span></button>`;
   }
 
   const model = MODEL_META[message.model]?.short || 'AI';
@@ -695,6 +702,7 @@ function renderConversation({ keepScroll = false } = {}) {
 
   if (!hasMessages) {
     document.title = 'DeepSeek Chatbox';
+    renderToc();
     return;
   }
 
@@ -706,7 +714,170 @@ function renderConversation({ keepScroll = false } = {}) {
   dom.messages.appendChild(fragment);
 
   document.title = `${conv.title} · DeepSeek Chatbox`;
+  renderToc();
   if (!keepScroll) requestAnimationFrame(() => scrollToBottom(true));
+}
+
+function tocPreview(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  return clean.length > 72 ? `${clean.slice(0, 72)}…` : clean || '（空提问）';
+}
+
+function renderToc() {
+  const conv = activeConversation();
+  const questions = conv ? conv.messages.filter((message) => message.role === 'user') : [];
+  dom.tocCount.textContent = questions.length ? `${questions.length} 个提问` : '';
+  if (!questions.length) {
+    dom.tocList.innerHTML = '<div class="toc-empty">还没有提问</div>';
+    return;
+  }
+  dom.tocList.innerHTML = questions
+    .map(
+      (message, index) =>
+        `<button class="toc-item" type="button" data-toc-id="${escapeHtml(message.id)}"><span class="toc-index">${
+          index + 1
+        }</span><span class="toc-text">${escapeHtml(tocPreview(message.content))}</span></button>`,
+    )
+    .join('');
+  syncTocActive();
+}
+
+function syncTocActive() {
+  if (!dom.tocPanel || dom.tocPanel.hidden) return;
+  const threshold = dom.chatScroll.getBoundingClientRect().top + 84;
+  const questions = [...dom.messages.querySelectorAll('.msg.user')];
+  let activeId = questions[0]?.dataset.msgId || '';
+  for (const article of questions) {
+    if (article.getBoundingClientRect().top <= threshold) activeId = article.dataset.msgId;
+  }
+  dom.tocList.querySelectorAll('.toc-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.tocId === activeId);
+  });
+}
+
+function jumpToTocMessage(messageId) {
+  const article = [...dom.messages.querySelectorAll('.msg.user')].find(
+    (item) => item.dataset.msgId === messageId,
+  );
+  if (!article) return;
+  const scroller = dom.chatScroll;
+  const top =
+    scroller.scrollTop +
+    article.getBoundingClientRect().top -
+    scroller.getBoundingClientRect().top -
+    18;
+  scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  article.classList.remove('msg-flash');
+  requestAnimationFrame(() => article.classList.add('msg-flash'));
+  setTimeout(() => article.classList.remove('msg-flash'), 1800);
+  if (window.matchMedia('(max-width: 900px)').matches) toggleToc(false);
+}
+
+function toggleToc(force) {
+  const open = typeof force === 'boolean' ? force : dom.tocPanel.hidden;
+  dom.tocPanel.hidden = !open;
+  dom.tocBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    toggleModelMenu(false);
+    toggleDataMenu(false);
+    renderToc();
+    requestAnimationFrame(syncTocActive);
+  }
+}
+
+function beginEditMessage(article, message) {
+  if (state.streaming) {
+    toast('请先停止当前生成，再修改提问', 'error');
+    return;
+  }
+  if (!hasApiKey()) {
+    toast('请先配置 DeepSeek API Key', 'error');
+    openSettings();
+    return;
+  }
+  const bubble = article.querySelector('.user-bubble');
+  if (!bubble || article.classList.contains('editing')) return;
+  if (!dom.tocPanel.hidden) toggleToc(false);
+
+  const conv = activeConversation();
+  const index = conv ? conv.messages.findIndex((item) => item.id === message.id) : -1;
+  const trailing = conv ? conv.messages.length - index - 1 : 0;
+
+  article.classList.add('editing');
+  const box = document.createElement('div');
+  box.className = 'edit-box';
+  box.innerHTML = `<textarea class="edit-input" rows="3" aria-label="修改提问"></textarea><div class="edit-hint"></div><div class="edit-actions"><button class="edit-btn" type="button" data-edit-action="cancel">取消</button><button class="edit-btn primary" type="button" data-edit-action="save">保存并重新生成</button></div>`;
+  bubble.replaceWith(box);
+
+  const textarea = box.querySelector('.edit-input');
+  const hint = box.querySelector('.edit-hint');
+  const saveBtn = box.querySelector('[data-edit-action="save"]');
+  textarea.value = message.content;
+  hint.textContent = trailing
+    ? `保存后会删除这条提问之后的 ${trailing} 条消息，并重新生成回答。`
+    : '保存后会重新生成这条回答。';
+
+  const autosize = () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+  };
+  textarea.addEventListener('input', autosize);
+  autosize();
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+  box.querySelector('[data-edit-action="cancel"]').addEventListener('click', () => {
+    renderConversation({ keepScroll: true });
+  });
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    const saved = await saveEditedMessage(message.id, textarea.value);
+    if (!saved) saveBtn.disabled = false;
+  });
+}
+
+async function saveEditedMessage(messageId, rawText) {
+  if (state.streaming) return false;
+  const text = String(rawText || '').trim();
+  if (!text) {
+    toast('提问不能为空', 'error');
+    return false;
+  }
+
+  const conv = activeConversation();
+  if (!conv) return false;
+  const index = conv.messages.findIndex((message) => message.id === messageId);
+  if (index < 0 || conv.messages[index].role !== 'user') return false;
+
+  const trailing = conv.messages.length - index - 1;
+  if (
+    trailing &&
+    !confirm(`修改这条提问会删除它之后的 ${trailing} 条消息，并重新生成回答。继续吗？`)
+  ) {
+    return false;
+  }
+  if (!hasApiKey()) {
+    toast('请先配置 DeepSeek API Key', 'error');
+    openSettings();
+    return false;
+  }
+
+  conv.messages = conv.messages.slice(0, index + 1);
+  const userMessage = conv.messages[index];
+  userMessage.content = text;
+  userMessage.ts = Date.now();
+  if (!conv.messages.slice(0, index).some((message) => message.role === 'user')) {
+    conv.title = titleFrom(text);
+  }
+
+  const assistant = createAssistantMessage();
+  conv.messages.push(assistant);
+  conv.updatedAt = Date.now();
+  persist();
+  renderSidebar();
+  renderConversation();
+  await streamAssistant(conv, assistant);
+  return true;
 }
 
 function switchConversation(id) {
@@ -793,14 +964,20 @@ function toggleModelMenu(force) {
   const open = typeof force === 'boolean' ? force : dom.modelMenu.hidden;
   dom.modelMenu.hidden = !open;
   dom.modelBtn.setAttribute('aria-expanded', String(open));
-  if (open) toggleDataMenu(false);
+  if (open) {
+    toggleDataMenu(false);
+    toggleToc(false);
+  }
 }
 
 function toggleDataMenu(force) {
   const open = typeof force === 'boolean' ? force : dom.dataMenu.hidden;
   dom.dataMenu.hidden = !open;
   dom.exportBtn.setAttribute('aria-expanded', String(open));
-  if (open) toggleModelMenu(false);
+  if (open) {
+    toggleModelMenu(false);
+    toggleToc(false);
+  }
 }
 
 function autosizeInput() {
@@ -1031,6 +1208,20 @@ async function streamAssistant(conv, assistant) {
   }
 }
 
+function createAssistantMessage() {
+  return {
+    id: uid(),
+    role: 'assistant',
+    content: '',
+    reasoning: '',
+    model: state.settings.model,
+    deepThink: Boolean(state.settings.deepThink),
+    ts: Date.now(),
+    streaming: true,
+    startedAt: Date.now(),
+  };
+}
+
 async function sendMessage(rawText) {
   const text = String(rawText || '').trim();
   if (!text || state.streaming) return;
@@ -1061,17 +1252,7 @@ async function sendMessage(rawText) {
     ts: Date.now(),
     model: state.settings.model,
   };
-  const assistant = {
-    id: uid(),
-    role: 'assistant',
-    content: '',
-    reasoning: '',
-    model: state.settings.model,
-    deepThink: Boolean(state.settings.deepThink),
-    ts: Date.now(),
-    streaming: true,
-    startedAt: Date.now(),
-  };
+  const assistant = createAssistantMessage();
 
   conv.messages.push(userMessage, assistant);
   conv.updatedAt = Date.now();
@@ -1093,40 +1274,48 @@ function stopStreaming() {
   state.streaming?.controller.abort();
 }
 
-async function regenerate() {
+async function regenerate(targetId = null) {
   if (state.streaming) return;
   const conv = activeConversation();
   if (!conv || !conv.messages.length) return;
-
-  let lastAssistantIndex = -1;
-  for (let i = conv.messages.length - 1; i >= 0; i -= 1) {
-    if (conv.messages[i].role === 'assistant') {
-      lastAssistantIndex = i;
-      break;
-    }
-  }
-  if (lastAssistantIndex < 0) {
-    const lastUser = [...conv.messages].reverse().find((m) => m.role === 'user');
-    if (!lastUser) return;
-    await sendMessage(lastUser.content);
+  if (!hasApiKey()) {
+    toast('请先配置 DeepSeek API Key', 'error');
+    openSettings();
     return;
   }
 
-  conv.messages.splice(lastAssistantIndex, 1);
-  const assistant = {
-    id: uid(),
-    role: 'assistant',
-    content: '',
-    reasoning: '',
-    model: state.settings.model,
-    deepThink: Boolean(state.settings.deepThink),
-    ts: Date.now(),
-    streaming: true,
-    startedAt: Date.now(),
-  };
+  let targetIndex = -1;
+  if (targetId) {
+    targetIndex = conv.messages.findIndex((message) => message.id === targetId);
+  } else {
+    for (let i = conv.messages.length - 1; i >= 0; i -= 1) {
+      if (conv.messages[i].role === 'assistant') {
+        targetIndex = i;
+        break;
+      }
+    }
+  }
+
+  let userIndex = -1;
+  const start = targetIndex >= 0 ? targetIndex - 1 : conv.messages.length - 1;
+  for (let i = start; i >= 0; i -= 1) {
+    if (conv.messages[i].role === 'user') {
+      userIndex = i;
+      break;
+    }
+  }
+  if (userIndex < 0) return;
+
+  if (targetIndex >= 0 && conv.messages.length > userIndex + 2) {
+    if (!confirm('重新生成这条回答会删除它之后的对话消息。继续吗？')) return;
+  }
+
+  conv.messages = conv.messages.slice(0, userIndex + 1);
+  const assistant = createAssistantMessage();
   conv.messages.push(assistant);
   conv.updatedAt = Date.now();
   persist();
+  renderSidebar();
   renderConversation({ keepScroll: true });
   await streamAssistant(conv, assistant);
 }
@@ -1764,6 +1953,28 @@ function wireEvents() {
     event.stopPropagation();
     toggleDataMenu();
   });
+  dom.tocBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleToc();
+  });
+  dom.tocClose.addEventListener('click', () => toggleToc(false));
+  dom.tocList.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-toc-id]');
+    if (!item) return;
+    jumpToTocMessage(item.dataset.tocId);
+  });
+  let tocScrollFrame = 0;
+  dom.chatScroll.addEventListener(
+    'scroll',
+    () => {
+      if (tocScrollFrame) return;
+      tocScrollFrame = requestAnimationFrame(() => {
+        tocScrollFrame = 0;
+        syncTocActive();
+      });
+    },
+    { passive: true },
+  );
   dom.dataMenu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-data-action]');
     if (!item) return;
@@ -1822,6 +2033,7 @@ function wireEvents() {
   document.addEventListener('click', (event) => {
     if (!event.target.closest('.model-wrap')) toggleModelMenu(false);
     if (!event.target.closest('.data-wrap')) toggleDataMenu(false);
+    if (!event.target.closest('.toc-wrap')) toggleToc(false);
   });
 
   dom.thinkToggle.addEventListener('click', toggleDeepThink);
@@ -1873,7 +2085,8 @@ function wireEvents() {
     if (!message) return;
 
     if (action.dataset.action === 'copy') copyText(message.content);
-    if (action.dataset.action === 'regenerate') regenerate();
+    if (action.dataset.action === 'edit') beginEditMessage(article, message);
+    if (action.dataset.action === 'regenerate') regenerate(message.id);
   });
 
   // Settings
@@ -1897,6 +2110,7 @@ function wireEvents() {
       if (!dom.settingsModal.hidden) closeSettings();
       if (!dom.modelMenu.hidden) toggleModelMenu(false);
       if (!dom.dataMenu.hidden) toggleDataMenu(false);
+      if (!dom.tocPanel.hidden) toggleToc(false);
       closeSidebar();
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
