@@ -182,6 +182,59 @@ function normalizeConversation(conv) {
     })
     .filter(Boolean)
     .slice(-8);
+  const turnBranches = normalizeTurnBranches(conv.turnBranches);
+  // Older versions stored whole-conversation snapshots in `branches`.
+  // Migrate their last user/assistant pair into the per-turn model so the
+  // existing versions remain reachable after upgrading.
+  for (const branch of branches) {
+    let lastUserIndex = -1;
+    for (let i = branch.messages.length - 1; i >= 0; i -= 1) {
+      if (branch.messages[i].role === 'user') {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    if (lastUserIndex < 0) continue;
+    const user = branch.messages[lastUserIndex];
+    const assistant = branch.messages[lastUserIndex + 1];
+    if (!assistant || assistant.role !== 'assistant') continue;
+    const group = (turnBranches[user.id] ||= { activeId: '', branches: [] });
+    if (!group.branches.some((item) => item.id === branch.id)) {
+      group.branches.push({
+        id: branch.id,
+        label: branch.label,
+        createdAt: branch.createdAt,
+        user,
+        assistant,
+      });
+    }
+  }
+  for (const [turnId, group] of Object.entries(turnBranches)) {
+    const userIndex = messages.findIndex((message) => message.id === turnId && message.role === 'user');
+    const user = userIndex >= 0 ? messages[userIndex] : null;
+    const assistant = userIndex >= 0 ? messages[userIndex + 1] : null;
+    if (user && assistant?.role === 'assistant' && assistant.content) {
+      const currentId = `current:${turnId}`;
+      let currentBranch = group.branches.find(
+        (item) => item.id === currentId || item.assistant.id === assistant.id,
+      );
+      if (!currentBranch) {
+        currentBranch = {
+          id: currentId,
+          label: '当前回答',
+          createdAt: Date.now(),
+          user,
+          assistant,
+        };
+        group.branches.push(currentBranch);
+      }
+      group.activeId = currentBranch.id;
+    }
+    group.branches = group.branches.slice(-8);
+    if (!group.branches.some((item) => item.id === group.activeId)) {
+      group.activeId = group.branches[group.branches.length - 1]?.id || '';
+    }
+  }
   return {
     id: String(conv.id || uid()),
     title: String(conv.title || '新对话').slice(0, 200) || '新对话',
@@ -189,7 +242,7 @@ function normalizeConversation(conv) {
     updatedAt: Number(conv.updatedAt) || Number(conv.createdAt) || Date.now(),
     messages,
     branches,
-    turnBranches: normalizeTurnBranches(conv.turnBranches),
+    turnBranches,
     currentBranchLabel: String(conv.currentBranchLabel || '主分支').slice(0, 80) || '主分支',
   };
 }
