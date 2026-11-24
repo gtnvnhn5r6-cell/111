@@ -224,6 +224,22 @@
         </section>
 
         <div class="composer-wrap">
+          <div id="contextMeter" class="context-meter" hidden>
+            <span class="context-label">上下文</span>
+            <div
+              id="contextTrack"
+              class="context-track"
+              role="progressbar"
+              aria-label="上下文用量"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <span id="contextFill" class="context-fill"></span>
+            </div>
+            <span id="contextUsage" class="context-usage">0 / 1.0M</span>
+            <span id="contextPercent" class="context-percent">0%</span>
+          </div>
           <form id="composer" class="composer">
             <textarea
               id="input"

@@ -35,9 +35,11 @@ const BACKUP_VERSION = 1;
 const MAX_IMPORT_FILE_BYTES = 60 * 1024 * 1024;
 
 const MODEL_META = {
-  'deepseek-flash': { label: 'DeepSeek-V4.1-Flash', short: 'V4.1-Flash' },
-  'deepseek-v4-pro': { label: 'DeepSeek-V4-Pro', short: 'V4-Pro' },
+  'deepseek-flash': { label: 'DeepSeek-V4.1-Flash', short: 'V4.1-Flash', contextWindow: 1048576 },
+  'deepseek-v4-pro': { label: 'DeepSeek-V4-Pro', short: 'V4-Pro', contextWindow: 1048576 },
 };
+
+const DEFAULT_CONTEXT_WINDOW = 1048576;
 
 function normalizeModel(model) {
   if (model === 'deepseek-v4-pro') return 'deepseek-v4-pro';
@@ -280,6 +282,7 @@ const state = {
   streaming: null,
   demo: new URLSearchParams(location.search).has('demo'),
   paintQueued: false,
+  contextUpdatedAt: 0,
 };
 
 if (!state.conversations.some((conv) => conv.id === state.activeId)) {
@@ -320,6 +323,11 @@ const dom = {
   composer: $('#composer'),
   input: $('#input'),
   inputHint: $('#inputHint'),
+  contextMeter: $('#contextMeter'),
+  contextTrack: $('#contextTrack'),
+  contextFill: $('#contextFill'),
+  contextUsage: $('#contextUsage'),
+  contextPercent: $('#contextPercent'),
   sendBtn: $('#sendBtn'),
   thinkToggle: $('#thinkToggle'),
   settingsModal: $('#settingsModal'),
@@ -798,6 +806,7 @@ function paintAssistant(article, message, isLastAssistant) {
 
   actions.innerHTML = renderActions(message, isLastAssistant);
   actions.style.visibility = message.streaming ? 'hidden' : '';
+  updateContextMeter();
 }
 
 function renderConversation({ keepScroll = false } = {}) {
@@ -811,6 +820,7 @@ function renderConversation({ keepScroll = false } = {}) {
   if (!hasMessages) {
     document.title = 'DeepSeek Chatbox';
     renderToc();
+    updateContextMeter(true);
     return;
   }
 
@@ -825,6 +835,7 @@ function renderConversation({ keepScroll = false } = {}) {
 
   document.title = `${conv.title} · DeepSeek Chatbox`;
   renderToc();
+  updateContextMeter(true);
   if (!keepScroll) requestAnimationFrame(() => scrollToBottom(true));
 }
 
@@ -1247,6 +1258,7 @@ function setModel(model) {
   state.settings.model = normalizeModel(model);
   saveSettings();
   updateModelUI();
+  updateContextMeter(true);
 }
 
 function updateModelUI() {
@@ -1304,6 +1316,92 @@ function updateComposerHint() {
   const hasText = Boolean(dom.input.value.trim());
   dom.inputHint.textContent = hasText ? 'Enter 发送 · Shift + Enter 换行' : '';
   dom.sendBtn.disabled = !hasText && !state.streaming;
+}
+
+/* ============================================================
+   Context usage meter
+   ============================================================ */
+
+const CJK_TOKEN_RE = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/g;
+
+function formatContextTokens(value) {
+  const n = Math.max(0, Number(value) || 0);
+  if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K`;
+  return String(Math.round(n));
+}
+
+function estimateTextTokens(value) {
+  const text = String(value || '');
+  if (!text) return 0;
+  const cjk = (text.match(CJK_TOKEN_RE) || []).length;
+  const other = text.length - cjk;
+  return Math.ceil(cjk * 1.02 + other / 3.6);
+}
+
+function estimateConversationTokens(conv) {
+  let total = 4;
+  const systemPrompt = state.settings.systemPrompt.trim();
+  if (systemPrompt) total += estimateTextTokens(systemPrompt) + 4;
+  for (const message of conv.messages) {
+    if (message.error || !String(message.content || '').trim()) continue;
+    total += estimateTextTokens(message.content) + 4;
+  }
+  return total;
+}
+
+function contextStatsFor(conv) {
+  const model = normalizeModel(state.settings.model);
+  const limit = MODEL_META[model]?.contextWindow || DEFAULT_CONTEXT_WINDOW;
+  if (!conv || !conv.messages.length) return { used: 0, limit, percent: 0, exact: false };
+
+  const last = conv.messages[conv.messages.length - 1];
+  if (
+    last.role === 'assistant' &&
+    !last.streaming &&
+    !last.error &&
+    Number(last.tokens?.prompt) > 0
+  ) {
+    const used = Number(last.tokens.prompt) + Number(last.tokens.completion || 0);
+    return { used, limit, percent: (used / limit) * 100, exact: true };
+  }
+
+  const used = estimateConversationTokens(conv);
+  return { used, limit, percent: (used / limit) * 100, exact: false };
+}
+
+function updateContextMeter(force = false) {
+  if (!dom.contextMeter) return;
+  const conv = activeConversation();
+  if (!conv || !conv.messages.length) {
+    dom.contextMeter.hidden = true;
+    dom.contextMeter.classList.remove('warn', 'danger');
+    return;
+  }
+
+  const now = Date.now();
+  if (!force && now - state.contextUpdatedAt < 280) return;
+  state.contextUpdatedAt = now;
+
+  const info = contextStatsFor(conv);
+  const width = info.used > 0 ? Math.max(1.2, Math.min(100, info.percent)) : 0;
+  const percentText =
+    info.used > 0 && info.percent < 0.1
+      ? '<0.1%'
+      : `${info.percent > 100 ? '>100' : info.percent >= 10 ? Math.round(info.percent) : info.percent.toFixed(1)}%`;
+
+  dom.contextMeter.hidden = false;
+  dom.contextFill.style.width = `${width}%`;
+  dom.contextUsage.textContent = `${formatContextTokens(info.used)} / ${formatContextTokens(info.limit)}`;
+  dom.contextPercent.textContent = percentText;
+  dom.contextTrack.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, Math.round(info.percent)))));
+  dom.contextMeter.classList.toggle('warn', info.percent >= 75 && info.percent < 90);
+  dom.contextMeter.classList.toggle('danger', info.percent >= 90);
+  dom.contextMeter.title = `${info.exact ? 'API 用量' : '估算用量'}：${Math.round(info.used).toLocaleString(
+    'en-US',
+  )} / ${info.limit.toLocaleString('en-US')} tokens${
+    info.exact ? '' : '（发送后按 API usage 校准）'
+  }`;
 }
 
 /* ============================================================
@@ -1461,6 +1559,7 @@ async function streamAssistant(conv, assistant) {
           completion: payload.usage.completion_tokens,
           total: payload.usage.total_tokens,
         };
+        updateContextMeter(true);
       }
     };
 
@@ -1523,6 +1622,7 @@ async function streamAssistant(conv, assistant) {
     if (state.streaming?.msgId === assistant.id) state.streaming = null;
     setStreamingUI(false);
     updateComposerHint();
+    updateContextMeter(true);
   }
 }
 
@@ -1761,6 +1861,7 @@ function saveSettingsFromModal() {
   saveSettings();
   updateModelUI();
   updateKeyState();
+  updateContextMeter(true);
   closeSettings();
   toast('设置已保存');
 }
