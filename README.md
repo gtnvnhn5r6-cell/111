@@ -104,13 +104,13 @@ node build-pages.mjs
 
 部署到 GitHub Pages：
 
-1. 新建仓库，例如 `ds-chat`；
+1. 新建公开仓库，例如 `ds-chat`；
 2. 把项目推送到 `main`；
-3. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**；
-4. 推送后 `.github/workflows/pages.yml` 会自动构建并部署；
+3. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **Deploy from a branch**，Branch 选 `gh-pages`，目录选 `/ (root)`；
+4. 之后每次 push 到 `main`，`.github/workflows/pages.yml` 都会重新构建并强制推送 `dist-pages/` 到 `gh-pages` 分支；
 5. 地址为 `https://<用户名>.github.io/ds-chat/`。
 
-也可以手动把 `dist-pages/` 的内容发布到 `gh-pages` 分支，然后在 Pages 里选择该分支。
+第一次推送后如果 `gh-pages` 分支还没有出现，等 Actions 跑完一次，或手动执行 `node build-pages.mjs` 后把 `dist-pages/` 发布到 `gh-pages` 分支。GitHub Free 的 Pages 只支持公开仓库。
 
 注意：
 
