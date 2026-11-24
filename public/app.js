@@ -129,6 +129,37 @@ function normalizeMessage(message) {
   };
 }
 
+function normalizeTurnBranches(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const output = {};
+  for (const [turnId, group] of Object.entries(raw)) {
+    if (!group || !Array.isArray(group.branches)) continue;
+    const branches = group.branches
+      .map((branch) => {
+        if (!branch?.user || !branch?.assistant) return null;
+        const user = normalizeMessage(branch.user);
+        const assistant = normalizeMessage(branch.assistant);
+        if (user.role !== 'user' || assistant.role !== 'assistant') return null;
+        if (!assistant.content && !assistant.reasoning && !assistant.error) return null;
+        return {
+          id: String(branch.id || uid()),
+          label: String(branch.label || '回答版本').slice(0, 80) || '回答版本',
+          createdAt: Number(branch.createdAt) || Date.now(),
+          user,
+          assistant,
+        };
+      })
+      .filter(Boolean)
+      .slice(-8);
+    if (!branches.length) continue;
+    const activeId = branches.some((branch) => branch.id === group.activeId)
+      ? group.activeId
+      : branches[branches.length - 1].id;
+    output[String(turnId)] = { activeId, branches };
+  }
+  return output;
+}
+
 function normalizeConversation(conv) {
   if (!conv || typeof conv !== 'object' || !Array.isArray(conv.messages)) return null;
   const messages = conv.messages
@@ -158,6 +189,7 @@ function normalizeConversation(conv) {
     updatedAt: Number(conv.updatedAt) || Number(conv.createdAt) || Date.now(),
     messages,
     branches,
+    turnBranches: normalizeTurnBranches(conv.turnBranches),
     currentBranchLabel: String(conv.currentBranchLabel || '主分支').slice(0, 80) || '主分支',
   };
 }
@@ -189,6 +221,7 @@ const state = {
   conversations: loadConversations(),
   activeId: localStorage.getItem(STORAGE.active) || null,
   search: '',
+  tocTurnId: null,
   serverKey: false,
   serverBase: 'https://api.deepseek.com',
   streaming: null,
@@ -617,10 +650,11 @@ function reasoningLabel(message) {
   return `已深度思考 · 用时 ${seconds} 秒`;
 }
 
-function createMessageElement(message, isLastAssistant) {
+function createMessageElement(message, isLastAssistant, turnId = null) {
   const article = document.createElement('article');
   article.className = `msg ${message.role}`;
   article.dataset.msgId = message.id;
+  if (turnId) article.dataset.turnId = turnId;
 
   if (message.role === 'user') {
     article.innerHTML = `<div class="msg-avatar">我</div><div class="msg-body"><div class="user-bubble">${escapeHtml(
@@ -631,6 +665,10 @@ function createMessageElement(message, isLastAssistant) {
 
   const body = document.createElement('div');
   body.className = 'msg-body';
+
+  const turnNav = document.createElement('div');
+  turnNav.innerHTML = turnId ? turnNavHtml(activeConversation(), turnId, message.id) : '';
+  if (turnNav.firstElementChild) body.appendChild(turnNav.firstElementChild);
 
   const reasoning = document.createElement('details');
   reasoning.className = 'reasoning';
@@ -725,8 +763,10 @@ function renderConversation({ keepScroll = false } = {}) {
 
   const lastAssistantId = [...conv.messages].reverse().find((m) => m.role === 'assistant')?.id;
   const fragment = document.createDocumentFragment();
+  let turnId = null;
   for (const message of conv.messages) {
-    fragment.appendChild(createMessageElement(message, message.id === lastAssistantId));
+    if (message.role === 'user') turnId = message.id;
+    fragment.appendChild(createMessageElement(message, message.id === lastAssistantId, message.role === 'assistant' ? turnId : null));
   }
   dom.messages.appendChild(fragment);
 
@@ -744,69 +784,181 @@ function cloneMessages(messages) {
   return JSON.parse(JSON.stringify(messages));
 }
 
-function preserveBranch(conv, label) {
-  if (!conv || !conv.messages.length) return;
-  conv.branches = Array.isArray(conv.branches) ? conv.branches : [];
-  conv.currentBranchLabel = conv.currentBranchLabel || '主分支';
-  conv.branches.push({
-    id: uid(),
-    label: label || `分支 ${conv.branches.length + 2}`,
-    createdAt: Date.now(),
-    messages: cloneMessages(conv.messages),
-  });
-  if (conv.branches.length > 8) conv.branches.splice(0, conv.branches.length - 8);
+function cloneMessage(message) {
+  return JSON.parse(JSON.stringify(message));
 }
 
-function switchBranch(branchId) {
+function ensureTurnGroup(conv, turnId) {
+  if (!conv.turnBranches || typeof conv.turnBranches !== 'object') conv.turnBranches = {};
+  if (!conv.turnBranches[turnId]) conv.turnBranches[turnId] = { activeId: '', branches: [] };
+  if (!Array.isArray(conv.turnBranches[turnId].branches)) conv.turnBranches[turnId].branches = [];
+  return conv.turnBranches[turnId];
+}
+
+function userIndexById(conv, turnId) {
+  return conv.messages.findIndex((message) => message.id === turnId && message.role === 'user');
+}
+
+function turnPairAt(conv, userIndex) {
+  const user = conv.messages[userIndex];
+  const assistant = conv.messages[userIndex + 1];
+  if (!user || user.role !== 'user' || !assistant || assistant.role !== 'assistant') return null;
+  return { user, assistant };
+}
+
+function saveTurnBranch(conv, userIndex, label) {
+  const pair = turnPairAt(conv, userIndex);
+  if (!pair) return null;
+  const group = ensureTurnGroup(conv, pair.user.id);
+  let branch = group.branches.find((item) => item.assistant.id === pair.assistant.id);
+  if (branch) {
+    branch.user = cloneMessage(pair.user);
+    branch.assistant = cloneMessage(pair.assistant);
+  } else {
+    branch = {
+      id: uid(),
+      label: label || `版本 ${group.branches.length + 1}`,
+      createdAt: Date.now(),
+      user: cloneMessage(pair.user),
+      assistant: cloneMessage(pair.assistant),
+    };
+    group.branches.push(branch);
+  }
+  if (group.branches.length > 8) group.branches.splice(0, group.branches.length - 8);
+  group.activeId = branch.id;
+  return branch;
+}
+
+function createTurnBranch(conv, userIndex, assistant, label) {
+  const user = conv.messages[userIndex];
+  if (!user || user.role !== 'user' || !assistant) return null;
+  const group = ensureTurnGroup(conv, user.id);
+  const branch = {
+    id: uid(),
+    label: label || `版本 ${group.branches.length + 1}`,
+    createdAt: Date.now(),
+    user: cloneMessage(user),
+    assistant: cloneMessage(assistant),
+  };
+  group.branches.push(branch);
+  if (group.branches.length > 8) group.branches.splice(0, group.branches.length - 8);
+  group.activeId = branch.id;
+  return branch;
+}
+
+function syncTurnBranch(conv, assistant) {
+  const index = conv.messages.findIndex((message) => message.id === assistant.id);
+  if (index < 1) return;
+  const pair = turnPairAt(conv, index - 1);
+  const group = pair ? conv.turnBranches?.[pair.user.id] : null;
+  if (!group) return;
+  const branch =
+    group.branches.find((item) => item.assistant.id === assistant.id) ||
+    group.branches.find((item) => item.id === group.activeId);
+  if (!branch) return;
+  branch.user = cloneMessage(pair.user);
+  branch.assistant = cloneMessage(assistant);
+  group.activeId = branch.id;
+}
+
+function removeTurnBranch(conv, assistantId) {
+  if (!conv.turnBranches) return;
+  for (const [turnId, group] of Object.entries(conv.turnBranches)) {
+    group.branches = group.branches.filter((branch) => branch.assistant.id !== assistantId);
+    if (!group.branches.length) {
+      delete conv.turnBranches[turnId];
+    } else if (!group.branches.some((branch) => branch.id === group.activeId)) {
+      group.activeId = group.branches[group.branches.length - 1].id;
+    }
+  }
+}
+
+function pruneTurnBranches(conv) {
+  if (!conv.turnBranches) return;
+  const turnIds = new Set(conv.messages.filter((message) => message.role === 'user').map((message) => message.id));
+  for (const turnId of Object.keys(conv.turnBranches)) {
+    if (!turnIds.has(turnId)) delete conv.turnBranches[turnId];
+  }
+}
+
+function getTurnBranchInfo(conv, turnId, assistantId) {
+  const group = turnId ? conv?.turnBranches?.[turnId] : null;
+  const branches = group?.branches || [];
+  let index = branches.findIndex((branch) => branch.assistant.id === assistantId);
+  if (index < 0 && group?.activeId) index = branches.findIndex((branch) => branch.id === group.activeId);
+  return { count: Math.max(1, branches.length), index: Math.max(0, index), branches, group };
+}
+
+function turnNavHtml(conv, turnId, assistantId) {
+  const info = getTurnBranchInfo(conv, turnId, assistantId);
+  const prevDisabled = info.index <= 0 ? ' disabled' : '';
+  const nextDisabled = info.index >= info.count - 1 ? ' disabled' : '';
+  return `<div class="turn-nav" data-turn-id="${escapeHtml(turnId || '')}" aria-label="回答版本"><button class="turn-arrow" type="button" data-turn-dir="-1" aria-label="上一个版本"${prevDisabled}>${icon(
+    'i-chevron',
+    'icon chev turn-chev-left',
+  )}</button><span class="turn-count">${info.index + 1}/${info.count}</span><button class="turn-arrow" type="button" data-turn-dir="1" aria-label="下一个版本"${nextDisabled}>${icon(
+    'i-chevron',
+    'icon chev turn-chev-right',
+  )}</button></div>`;
+}
+
+function switchTurnBranch(turnId, target) {
   if (state.streaming) {
-    toast('请先停止当前生成，再切换分支', 'error');
+    toast('请先停止当前生成，再切换版本', 'error');
     return;
   }
   const conv = activeConversation();
-  const branch = conv?.branches?.find((item) => item.id === branchId);
-  if (!conv || !branch) return;
+  if (!conv || !turnId) return;
+  const userIndex = userIndexById(conv, turnId);
+  if (userIndex < 0) return;
+  const group = conv.turnBranches?.[turnId];
+  if (!group || group.branches.length < 2) return;
 
-  const current = {
-    id: uid(),
-    label: conv.currentBranchLabel || '主分支',
-    createdAt: Date.now(),
-    messages: cloneMessages(conv.messages),
-  };
-  conv.branches = conv.branches.filter((item) => item.id !== branchId);
-  conv.messages = branch.messages;
-  conv.currentBranchLabel = branch.label;
-  conv.branches.push(current);
-  if (conv.branches.length > 8) conv.branches.splice(0, conv.branches.length - 8);
+  saveTurnBranch(conv, userIndex);
+  let currentIndex = group.branches.findIndex((branch) => branch.id === group.activeId);
+  if (currentIndex < 0) currentIndex = 0;
+  let nextIndex = currentIndex;
+  if (typeof target === 'number') nextIndex = currentIndex + target;
+  else nextIndex = group.branches.findIndex((branch) => branch.id === target);
+  if (nextIndex < 0 || nextIndex >= group.branches.length || nextIndex === currentIndex) return;
+
+  const branch = group.branches[nextIndex];
+  group.activeId = branch.id;
+  conv.messages[userIndex] = cloneMessage(branch.user);
+  conv.messages[userIndex + 1] = cloneMessage(branch.assistant);
+  if (conv.messages[userIndex].id !== turnId) conv.messages[userIndex].id = turnId;
   conv.updatedAt = Date.now();
+  state.tocTurnId = turnId;
 
   persist();
+  renderConversation({ keepScroll: true });
   renderSidebar();
-  renderConversation();
-  toggleToc(false);
-  toast(`已切换到「${branch.label}」`);
+  renderToc();
 }
 
-function renderBranchList(conv) {
-  const branches = conv?.branches || [];
-  dom.tocBranches.hidden = !branches.length;
-  if (!branches.length) {
+function renderBranchList(conv, turnId) {
+  const group = turnId ? conv?.turnBranches?.[turnId] : null;
+  const branches = group?.branches || [];
+  dom.tocBranches.hidden = branches.length < 2;
+  if (branches.length < 2) {
     dom.tocBranchList.innerHTML = '';
     dom.tocBranchCount.textContent = '';
     return;
   }
-  dom.tocBranchCount.textContent = `${branches.length + 1} 个分支`;
-  const current = `<button class="toc-branch current" type="button" data-branch-current="1"><span class="toc-branch-dot"></span><span class="toc-branch-label">${escapeHtml(
-    conv.currentBranchLabel || '当前分支',
-  )}</span><span class="toc-branch-meta">当前</span></button>`;
-  const items = branches
+  dom.tocBranchCount.textContent = `${branches.length} 个版本`;
+  const activeId = branches.some((branch) => branch.id === group.activeId)
+    ? group.activeId
+    : branches[branches.length - 1].id;
+  dom.tocBranchList.innerHTML = branches
     .map(
-      (branch) =>
-        `<button class="toc-branch" type="button" data-branch-id="${escapeHtml(branch.id)}"><span class="toc-branch-dot"></span><span class="toc-branch-label">${escapeHtml(
+      (branch, index) =>
+        `<button class="toc-branch${branch.id === activeId ? ' current' : ''}" type="button" data-branch-id="${escapeHtml(
+          branch.id,
+        )}"><span class="toc-branch-dot"></span><span class="toc-branch-label">${escapeHtml(
           branch.label,
-        )}</span><span class="toc-branch-meta">${branch.messages.length} 条</span></button>`,
+        )}</span><span class="toc-branch-meta">${index + 1}/${branches.length}</span></button>`,
     )
     .join('');
-  dom.tocBranchList.innerHTML = current + items;
 }
 
 function renderToc() {
@@ -815,6 +967,7 @@ function renderToc() {
   dom.tocCount.textContent = questions.length ? `${questions.length} 个提问` : '';
   if (!questions.length) {
     dom.tocList.innerHTML = '<div class="toc-empty">还没有提问</div>';
+    state.tocTurnId = null;
   } else {
     dom.tocList.innerHTML = questions
       .map(
@@ -824,9 +977,12 @@ function renderToc() {
           }</span><span class="toc-text">${escapeHtml(tocPreview(message.content))}</span></button>`,
       )
       .join('');
+    if (!questions.some((message) => message.id === state.tocTurnId)) {
+      state.tocTurnId = questions[questions.length - 1].id;
+    }
     syncTocActive();
   }
-  renderBranchList(conv);
+  renderBranchList(conv, state.tocTurnId);
 }
 
 function syncTocActive() {
@@ -840,6 +996,10 @@ function syncTocActive() {
   dom.tocList.querySelectorAll('.toc-item').forEach((item) => {
     item.classList.toggle('active', item.dataset.tocId === activeId);
   });
+  if (activeId && activeId !== state.tocTurnId) {
+    state.tocTurnId = activeId;
+    renderBranchList(activeConversation(), activeId);
+  }
 }
 
 function jumpToTocMessage(messageId) {
@@ -847,6 +1007,8 @@ function jumpToTocMessage(messageId) {
     (item) => item.dataset.msgId === messageId,
   );
   if (!article) return;
+  state.tocTurnId = messageId;
+  renderBranchList(activeConversation(), messageId);
   const scroller = dom.chatScroll;
   const top =
     scroller.scrollTop +
@@ -901,8 +1063,8 @@ function beginEditMessage(article, message) {
   const saveBtn = box.querySelector('[data-edit-action="save"]');
   textarea.value = message.content;
   hint.textContent = trailing
-    ? `保存后会保留当前对话为分支（含之后 ${trailing} 条消息），并从修改后的提问重新生成。`
-    : '保存后会保留当前回答为分支，并重新生成。';
+    ? `保存后会把当前这轮对话保留为版本（含之后 ${trailing} 条消息），并从修改后的提问重新生成。`
+    : '保存后会把当前回答保留为版本，并重新生成。';
 
   const autosize = () => {
     textarea.style.height = 'auto';
@@ -940,7 +1102,7 @@ async function saveEditedMessage(messageId, rawText) {
   if (
     trailing &&
     !confirm(
-      `修改这条提问会保留当前对话为一个分支，并从修改后的提问重新生成。继续吗？`,
+      `修改这条提问会把当前这轮对话保留为一个版本，并从修改后的提问重新生成。继续吗？`,
     )
   ) {
     return false;
@@ -951,8 +1113,11 @@ async function saveEditedMessage(messageId, rawText) {
     return false;
   }
 
-  preserveBranch(conv, '修改前的分支');
-  conv.currentBranchLabel = '修改后的分支';
+  const existingBranches = conv.turnBranches?.[messageId]?.branches || [];
+  const editCount = existingBranches.filter(
+    (branch) => branch.label === '修改后' || branch.label.startsWith('修改后 '),
+  ).length;
+  saveTurnBranch(conv, index, '修改前');
   conv.messages = conv.messages.slice(0, index + 1);
   const userMessage = conv.messages[index];
   userMessage.content = text;
@@ -963,11 +1128,14 @@ async function saveEditedMessage(messageId, rawText) {
 
   const assistant = createAssistantMessage();
   conv.messages.push(assistant);
+  createTurnBranch(conv, index, assistant, editCount ? `修改后 ${editCount + 1}` : '修改后');
+  pruneTurnBranches(conv);
+  state.tocTurnId = userMessage.id;
   conv.updatedAt = Date.now();
   persist();
   renderSidebar();
   renderConversation();
-  toast('当前对话已保留为分支，可在对话目录中切换');
+  toast('旧回答已保留为版本，可在回答上方切换');
   await streamAssistant(conv, assistant);
   return true;
 }
@@ -1267,6 +1435,7 @@ async function streamAssistant(conv, assistant) {
     assistant.streaming = false;
     assistant.thinkingMs = assistant.thinkingMs || (firstContentAt ? firstContentAt - assistant.startedAt : Date.now() - assistant.startedAt);
     assistant.updatedAt = Date.now();
+    syncTurnBranch(conv, assistant);
     conv.updatedAt = Date.now();
     persist();
     renderConversation({ keepScroll: true });
@@ -1279,6 +1448,9 @@ async function streamAssistant(conv, assistant) {
       assistant.stopped = true;
       if (!assistant.content && !assistant.reasoning) {
         conv.messages = conv.messages.filter((item) => item.id !== assistant.id);
+        removeTurnBranch(conv, assistant.id);
+      } else {
+        syncTurnBranch(conv, assistant);
       }
       conv.updatedAt = Date.now();
       persist();
@@ -1287,6 +1459,7 @@ async function streamAssistant(conv, assistant) {
       toast('已停止生成');
     } else {
       assistant.error = error.message || '未知错误';
+      syncTurnBranch(conv, assistant);
       conv.updatedAt = Date.now();
       persist();
       renderConversation({ keepScroll: true });
@@ -1398,16 +1571,21 @@ async function regenerate(targetId = null) {
   }
   if (userIndex < 0) return;
 
-  preserveBranch(conv, '重新生成前的分支');
-  conv.currentBranchLabel = '重新生成后的分支';
+  const userMessage = conv.messages[userIndex];
+  const existingBranches = conv.turnBranches?.[userMessage.id]?.branches || [];
+  const regenCount = existingBranches.filter((branch) => branch.label.startsWith('重新生成')).length;
+  saveTurnBranch(conv, userIndex, '原始回答');
   conv.messages = conv.messages.slice(0, userIndex + 1);
   const assistant = createAssistantMessage();
   conv.messages.push(assistant);
+  createTurnBranch(conv, userIndex, assistant, regenCount ? `重新生成 ${regenCount + 1}` : '重新生成');
+  pruneTurnBranches(conv);
+  state.tocTurnId = userMessage.id;
   conv.updatedAt = Date.now();
   persist();
   renderSidebar();
   renderConversation({ keepScroll: true });
-  toast('旧回答已保留为分支，可在对话目录中切换');
+  toast('旧回答已保留为版本，可用回答上方的箭头切换');
   await streamAssistant(conv, assistant);
 }
 
@@ -2057,7 +2235,7 @@ function wireEvents() {
   dom.tocBranchList.addEventListener('click', (event) => {
     const item = event.target.closest('[data-branch-id]');
     if (!item) return;
-    switchBranch(item.dataset.branchId);
+    switchTurnBranch(state.tocTurnId, item.dataset.branchId);
   });
   let tocScrollFrame = 0;
   dom.chatScroll.addEventListener(
@@ -2169,6 +2347,13 @@ function wireEvents() {
     const codeButton = event.target.closest('[data-copy-code]');
     if (codeButton) {
       copyCode(codeButton);
+      return;
+    }
+
+    const turnArrow = event.target.closest('[data-turn-dir]');
+    if (turnArrow) {
+      const nav = turnArrow.closest('.turn-nav');
+      if (nav) switchTurnBranch(nav.dataset.turnId, Number(turnArrow.dataset.turnDir));
       return;
     }
 
