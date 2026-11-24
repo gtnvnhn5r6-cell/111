@@ -1,0 +1,18 @@
+{
+  "name": "DeepSeek Chatbox",
+  "short_name": "DeepSeek",
+  "description": "A local-first DeepSeek chat UI with ZIP backup.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4d6bfe",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

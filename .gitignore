@@ -1,0 +1,5 @@
+.env
+.edge-*/
+node_modules/
+dist-pages/
+*.log

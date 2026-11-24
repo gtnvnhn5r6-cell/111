@@ -1,0 +1,15 @@
+{
+  "name": "deepseek-chatbox",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local, DeepSeek-style web chatbox powered by the DeepSeek API.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "build:pages": "node build-pages.mjs"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

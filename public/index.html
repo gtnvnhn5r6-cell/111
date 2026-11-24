@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>DeepSeek Chatbox</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.4.7.77.88.24.11.5.17.77.17H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5.95Z" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5" /></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z" /></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3m0 0L8 7m4-4 4 4" /><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4" /><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" /></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M8 9h8M8 13h8M8 17h5" /></symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6" /></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" /></symbol>
+      <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9.5 4.5A3 3 0 0 0 6.6 7a3 3 0 0 0-1.8 5.2A3 3 0 0 0 7 17.6a3 3 0 0 0 5.5 1.2V4.9a2.5 2.5 0 0 0-3-.4Z" /><path d="M14.5 4.5A3 3 0 0 1 17.4 7a3 3 0 0 1 1.8 5.2 3 3 0 0 1-2.2 5.4 3 3 0 0 1-5.5 1.2" /><path d="M9 9.5a2.2 2.2 0 0 0-2 2M15 9.5a2.2 2.2 0 0 1 2 2" /></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" /></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.7 4.2" /><path d="M20 5v6h-6" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M10 11v6M14 11v6" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" /><path d="m11 12 9-9M17 3l4 4-3 3-4-4" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 19.2A1.4 1.4 0 0 0 4 21.3h16a1.4 1.4 0 0 0 1.2-2.1L12 3Z" /><path d="M12 9v5M12 17.5v.5" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" /><path d="m14.5 6.5 3 3" /></symbol>
+      <symbol id="i-whale" viewBox="0 0 24 24"><path d="M3.8 12.2c0-4.5 3.7-8.2 8.2-8.2 4.2 0 7.8 3.2 8.2 7.4.1 1.2-.8 2.2-2 2.2h-2.6a1 1 0 0 0-.7 1.7l1.2 1.2a2.3 2.3 0 0 1-3.2 3.2l-1.3-1.3a1 1 0 0 0-1.4 0l-1 1a2.3 2.3 0 0 1-3.3-3.3l.7-.7a1 1 0 0 0-.7-1.7H5.8a2 2 0 0 1-2-1.5Z" /><circle cx="14.8" cy="9.4" r="1.05" fill="currentColor" stroke="none" /></symbol>
+    </svg>
+
+    <div class="app">
+      <aside id="sidebar" class="sidebar" aria-label="对话列表">
+        <div class="sidebar-head">
+          <a class="brand" href="/" aria-label="DeepSeek Chatbox">
+            <span class="brand-mark"><svg class="icon"><use href="#i-whale" /></svg></span>
+            <span class="brand-name">deepseek <em>chat</em></span>
+          </a>
+          <button id="closeSidebar" class="icon-btn only-mobile" aria-label="关闭侧栏">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </div>
+
+        <button id="newChat" class="new-chat" type="button">
+          <svg class="icon"><use href="#i-plus" /></svg>
+          <span>开启新对话</span>
+        </button>
+
+        <label class="search-box">
+          <svg class="icon"><use href="#i-search" /></svg>
+          <input id="search" type="search" placeholder="搜索对话" autocomplete="off" />
+        </label>
+
+        <nav id="convList" class="conv-list" aria-label="历史对话"></nav>
+
+        <div class="sidebar-foot">
+          <button id="settingsBtn" class="profile-btn" type="button">
+            <span class="avatar">D</span>
+            <span class="profile-meta">
+              <strong>本地用户</strong>
+              <small id="keyState">未配置 API Key</small>
+            </span>
+            <svg class="icon"><use href="#i-settings" /></svg>
+          </button>
+        </div>
+      </aside>
+
+      <div id="scrim" class="scrim" hidden></div>
+
+      <main class="main">
+        <header class="topbar">
+          <button id="menuBtn" class="icon-btn only-mobile" aria-label="打开侧栏">
+            <svg class="icon"><use href="#i-menu" /></svg>
+          </button>
+
+          <div class="model-wrap">
+            <button id="modelBtn" class="model-btn" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span class="model-glow"></span>
+              <span id="modelLabel">DeepSeek-V4.1-Flash</span>
+              <svg class="icon chevron"><use href="#i-chevron" /></svg>
+            </button>
+            <div id="modelMenu" class="model-menu" role="menu" hidden>
+              <button class="model-option" type="button" data-model="deepseek-flash" role="menuitem">
+                <span class="model-icon chat"><svg class="icon"><use href="#i-whale" /></svg></span>
+                <span class="model-text">
+                  <strong>DeepSeek-V4.1-Flash</strong>
+                  <small>极速响应，适合日常对话</small>
+                </span>
+                <svg class="icon tick"><use href="#i-check" /></svg>
+              </button>
+              <button class="model-option" type="button" data-model="deepseek-v4-pro" role="menuitem">
+                <span class="model-icon think"><svg class="icon"><use href="#i-brain" /></svg></span>
+                <span class="model-text">
+                  <strong>DeepSeek-V4-Pro</strong>
+                  <small>旗舰模型，擅长复杂任务</small>
+                </span>
+                <svg class="icon tick"><use href="#i-check" /></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="top-actions">
+            <button id="themeBtn" class="icon-btn" type="button" aria-label="切换主题" title="切换主题">
+              <svg class="icon theme-sun"><use href="#i-sun" /></svg>
+              <svg class="icon theme-moon"><use href="#i-moon" /></svg>
+            </button>
+            <div class="data-wrap">
+              <button
+                id="exportBtn"
+                class="icon-btn"
+                type="button"
+                aria-label="导入或导出对话"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="导入 / 导出对话"
+              >
+                <svg class="icon"><use href="#i-share" /></svg>
+              </button>
+              <div id="dataMenu" class="model-menu data-menu" role="menu" hidden>
+                <button class="model-option" type="button" data-data-action="export-zip" role="menuitem">
+                  <span class="model-icon chat"><svg class="icon"><use href="#i-archive" /></svg></span>
+                  <span class="model-text">
+                    <strong>导出全部对话（ZIP）</strong>
+                    <small>完整备份，包含全部会话</small>
+                  </span>
+                </button>
+                <button class="model-option" type="button" data-data-action="export-md" role="menuitem">
+                  <span class="model-icon think"><svg class="icon"><use href="#i-edit" /></svg></span>
+                  <span class="model-text">
+                    <strong>导出当前对话（Markdown）</strong>
+                    <small>方便阅读和分享</small>
+                  </span>
+                </button>
+                <div class="menu-sep"></div>
+                <button class="model-option" type="button" data-data-action="import-zip" role="menuitem">
+                  <span class="model-icon chat"><svg class="icon"><use href="#i-download" /></svg></span>
+                  <span class="model-text">
+                    <strong>导入对话（ZIP）</strong>
+                    <small>与现有对话合并，不覆盖</small>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section id="chatScroll" class="chat-scroll">
+          <div id="welcome" class="welcome">
+            <div class="hero-orb" aria-hidden="true">
+              <span class="orb-ring ring-1"></span>
+              <span class="orb-ring ring-2"></span>
+              <span class="orb-core"><svg class="icon"><use href="#i-whale" /></svg></span>
+            </div>
+            <h1>我是 DeepSeek，很高兴见到你！</h1>
+            <p>我可以帮你写代码、写作、分析问题，也能陪你把一个想法聊清楚。<br />请把你的任务交给我吧~</p>
+
+            <button id="welcomeKeyHint" class="key-banner" type="button" hidden>
+              <svg class="icon"><use href="#i-key" /></svg>
+              <span>还没有配置 API Key，点这里完成设置</span>
+              <svg class="icon arrow"><use href="#i-arrow-up" /></svg>
+            </button>
+
+            <div class="suggestions">
+              <button class="suggestion" type="button" data-prompt="帮我写一份本周工作周报，包含本周进展、遇到的问题和下周计划。">
+                <span class="suggestion-icon tone-blue">✍️</span>
+                <span><strong>写一份周报</strong><small>整理本周工作进展</small></span>
+              </button>
+              <button class="suggestion" type="button" data-prompt="用通俗易懂的方式解释一下量子纠缠，最好打个比方。">
+                <span class="suggestion-icon tone-violet">🧠</span>
+                <span><strong>解释一个概念</strong><small>把复杂知识讲明白</small></span>
+              </button>
+              <button class="suggestion" type="button" data-prompt="我有一个 Python 脚本运行很慢，帮我分析常见的性能瓶颈和优化思路。">
+                <span class="suggestion-icon tone-cyan">💻</span>
+                <span><strong>优化一段代码</strong><small>定位瓶颈并给出方案</small></span>
+              </button>
+              <button class="suggestion" type="button" data-prompt="帮我规划一个三天两晚的杭州周末旅行，预算 2000 元，喜欢自然风景和本地小吃。">
+                <span class="suggestion-icon tone-amber">🧳</span>
+                <span><strong>做一份旅行计划</strong><small>行程、预算与美食</small></span>
+              </button>
+            </div>
+          </div>
+
+          <div id="messages" class="messages" aria-live="polite"></div>
+        </section>
+
+        <div class="composer-wrap">
+          <form id="composer" class="composer">
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="给 DeepSeek 发送消息"
+              autocomplete="off"
+              aria-label="消息输入框"
+            ></textarea>
+            <div class="composer-bar">
+              <div class="composer-left">
+                <button id="thinkToggle" class="toggle-chip" type="button" aria-pressed="false">
+                  <svg class="icon"><use href="#i-brain" /></svg>
+                  <span>深度思考</span>
+                </button>
+              </div>
+              <div class="composer-right">
+                <span id="inputHint" class="input-hint"></span>
+                <button id="sendBtn" class="send-btn" type="submit" aria-label="发送">
+                  <svg class="icon send-icon"><use href="#i-arrow-up" /></svg>
+                  <svg class="icon stop-icon"><use href="#i-stop" /></svg>
+                </button>
+              </div>
+            </div>
+          </form>
+          <p class="disclaimer">内容由 AI 生成，请仔细甄别 · 对话仅保存在你的浏览器</p>
+        </div>
+      </main>
+    </div>
+
+    <div id="settingsModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-settings></div>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <header class="modal-head">
+          <div>
+            <h2 id="settingsTitle">设置</h2>
+            <p>配置 DeepSeek API 与对话偏好</p>
+          </div>
+          <button class="icon-btn" type="button" data-close-settings aria-label="关闭设置">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </header>
+
+        <div class="modal-body">
+          <div class="field-group">
+            <div class="group-title">
+              <span>API 连接</span>
+              <span id="serverKeyBadge" class="badge" hidden>服务端已配置</span>
+            </div>
+
+            <label class="field">
+              <span class="field-label">API Key</span>
+              <span class="input-with-action">
+                <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+                <button id="toggleKey" class="input-action" type="button" aria-label="显示或隐藏 API Key">
+                  <svg class="icon eye-open"><use href="#i-key" /></svg>
+                </button>
+              </span>
+              <span class="field-hint">只保存在当前浏览器；静态版直接请求 DeepSeek，服务端版仅经本地代理转发。</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">API 地址 <em>可选</em></span>
+              <input id="baseUrlInput" type="url" placeholder="https://api.deepseek.com" spellcheck="false" />
+              <span class="field-hint">使用官方地址时留空即可；兼容 OpenAI 格式的代理地址也可以填写。</span>
+            </label>
+
+            <div class="test-row">
+              <button id="testBtn" class="ghost-btn" type="button">测试连接</button>
+              <span id="testResult" class="test-result"></span>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <div class="group-title"><span>对话偏好</span></div>
+
+            <label class="field">
+              <span class="field-label">默认模型</span>
+              <select id="modelSelect">
+                <option value="deepseek-flash">DeepSeek-V4.1-Flash（快速）</option>
+                <option value="deepseek-v4-pro">DeepSeek-V4-Pro（旗舰）</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field-label">温度 <span id="tempValue" class="field-value">1.0</span></span>
+              <input id="tempInput" type="range" min="0" max="2" step="0.1" value="1" />
+              <span class="field-hint">数值越低回答越稳定，越高越有创造性。</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">系统提示词 <em>可选</em></span>
+              <textarea id="systemPromptInput" rows="3" placeholder="例如：你是一位严谨的中文技术顾问，回答要简洁。"></textarea>
+            </label>
+          </div>
+
+          <div class="field-group">
+            <div class="group-title"><span>对话数据</span></div>
+            <p class="data-hint">
+              ZIP 备份包含全部对话，解压后是可读的 JSON。导入时会与现有记录合并，不会覆盖或删除已有对话；也兼容 Chatbox 导出的 chat_sessions ZIP。
+            </p>
+            <div class="data-actions">
+              <button id="exportZipBtn" class="ghost-btn" type="button">导出全部（ZIP）</button>
+              <button id="importZipBtn" class="ghost-btn" type="button">导入 ZIP</button>
+            </div>
+          </div>
+        </div>
+
+        <footer class="modal-foot">
+          <button id="clearDataBtn" class="text-btn danger" type="button">清除本地数据</button>
+          <div class="modal-foot-right">
+            <button class="ghost-btn" type="button" data-close-settings>取消</button>
+            <button id="saveSettingsBtn" class="primary-btn" type="button">保存设置</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
+    <input id="zipInput" type="file" accept=".zip,.json,application/zip,application/json" hidden />
+
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
