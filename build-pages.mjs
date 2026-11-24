@@ -10,7 +10,8 @@
  * output works at https://<user>.github.io/<repo>/ as well as at a domain root.
  */
 
-import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +33,28 @@ await writeFile(
   `window.DSC_CONFIG = ${JSON.stringify(config, null, 2)};\n`,
   'utf8',
 );
+
+// GitHub Pages caches plain .js/.css for ten minutes. Stamp the asset URLs with
+// a content hash so a new deploy cannot pair an old app.js with a new index.html.
+const assetVersion = createHash('sha256')
+  .update(await readFile(path.join(OUT, 'app.js')))
+  .update(await readFile(path.join(OUT, 'styles.css')))
+  .update(await readFile(path.join(OUT, 'zip.js')))
+  .update(await readFile(path.join(OUT, 'config.js')))
+  .digest('hex')
+  .slice(0, 10);
+
+const versioned = (name) => `./${name}?v=${assetVersion}`;
+const indexPath = path.join(OUT, 'index.html');
+let indexHtml = await readFile(indexPath, 'utf8');
+for (const name of ['styles.css', 'app.js', 'config.js']) {
+  indexHtml = indexHtml.replaceAll(`./${name}`, versioned(name));
+}
+await writeFile(indexPath, indexHtml, 'utf8');
+
+const appPath = path.join(OUT, 'app.js');
+const appCode = await readFile(appPath, 'utf8');
+await writeFile(appPath, appCode.replaceAll("from './zip.js'", `from './zip.js?v=${assetVersion}'`), 'utf8');
 
 // GitHub Pages serves static files only. The app has no client-side router,
 // but this keeps an unknown sub-path from showing the default 404 page.

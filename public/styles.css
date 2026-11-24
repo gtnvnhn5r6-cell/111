@@ -551,6 +551,8 @@ a {
 }
 
 .toc-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 6px;
@@ -616,6 +618,85 @@ a {
   color: var(--text-3);
   text-align: center;
   font-size: 12.5px;
+}
+
+.toc-branches {
+  flex: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 6px 6px;
+}
+
+.toc-branch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.toc-branch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.toc-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toc-branch:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.toc-branch.current {
+  color: var(--accent);
+  background: var(--accent-soft);
+  cursor: default;
+}
+
+.toc-branch-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.toc-branch.current .toc-branch-dot {
+  opacity: 1;
+}
+
+.toc-branch-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-branch-meta {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
 }
 
 .model-btn {

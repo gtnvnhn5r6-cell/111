@@ -135,12 +135,30 @@ function normalizeConversation(conv) {
     .filter((message) => message && ['user', 'assistant'].includes(message.role))
     .map(normalizeMessage);
   if (!messages.length) return null;
+  const branches = (Array.isArray(conv.branches) ? conv.branches : [])
+    .map((branch) => {
+      if (!branch || !Array.isArray(branch.messages)) return null;
+      const branchMessages = branch.messages
+        .filter((message) => message && ['user', 'assistant'].includes(message.role))
+        .map(normalizeMessage);
+      if (!branchMessages.length) return null;
+      return {
+        id: String(branch.id || uid()),
+        label: String(branch.label || '分支').slice(0, 80) || '分支',
+        createdAt: Number(branch.createdAt) || Date.now(),
+        messages: branchMessages,
+      };
+    })
+    .filter(Boolean)
+    .slice(-8);
   return {
     id: String(conv.id || uid()),
     title: String(conv.title || '新对话').slice(0, 200) || '新对话',
     createdAt: Number(conv.createdAt) || Date.now(),
     updatedAt: Number(conv.updatedAt) || Number(conv.createdAt) || Date.now(),
     messages,
+    branches,
+    currentBranchLabel: String(conv.currentBranchLabel || '主分支').slice(0, 80) || '主分支',
   };
 }
 
@@ -203,6 +221,9 @@ const dom = {
   tocList: $('#tocList'),
   tocCount: $('#tocCount'),
   tocClose: $('#tocClose'),
+  tocBranches: $('#tocBranches'),
+  tocBranchList: $('#tocBranchList'),
+  tocBranchCount: $('#tocBranchCount'),
   zipInput: $('#zipInput'),
   exportZipBtn: $('#exportZipBtn'),
   importZipBtn: $('#importZipBtn'),
@@ -585,13 +606,9 @@ function renderActions(message, isLastAssistant) {
   const model = MODEL_META[message.model]?.short || 'AI';
   return `<button class="msg-action" type="button" data-action="copy">${icon(
     'i-copy',
-  )}<span>复制</span></button>${
-    isLastAssistant
-      ? `<button class="msg-action" type="button" data-action="regenerate">${icon(
-          'i-refresh',
-        )}<span>重新生成</span></button>`
-      : ''
-  }<span class="msg-model-tag">${escapeHtml(model)}</span>`;
+  )}<span>复制</span></button><button class="msg-action" type="button" data-action="regenerate">${icon(
+    'i-refresh',
+  )}<span>重新生成</span></button><span class="msg-model-tag">${escapeHtml(model)}</span>`;
 }
 
 function reasoningLabel(message) {
@@ -723,23 +740,93 @@ function tocPreview(text) {
   return clean.length > 72 ? `${clean.slice(0, 72)}…` : clean || '（空提问）';
 }
 
+function cloneMessages(messages) {
+  return JSON.parse(JSON.stringify(messages));
+}
+
+function preserveBranch(conv, label) {
+  if (!conv || !conv.messages.length) return;
+  conv.branches = Array.isArray(conv.branches) ? conv.branches : [];
+  conv.currentBranchLabel = conv.currentBranchLabel || '主分支';
+  conv.branches.push({
+    id: uid(),
+    label: label || `分支 ${conv.branches.length + 2}`,
+    createdAt: Date.now(),
+    messages: cloneMessages(conv.messages),
+  });
+  if (conv.branches.length > 8) conv.branches.splice(0, conv.branches.length - 8);
+}
+
+function switchBranch(branchId) {
+  if (state.streaming) {
+    toast('请先停止当前生成，再切换分支', 'error');
+    return;
+  }
+  const conv = activeConversation();
+  const branch = conv?.branches?.find((item) => item.id === branchId);
+  if (!conv || !branch) return;
+
+  const current = {
+    id: uid(),
+    label: conv.currentBranchLabel || '主分支',
+    createdAt: Date.now(),
+    messages: cloneMessages(conv.messages),
+  };
+  conv.branches = conv.branches.filter((item) => item.id !== branchId);
+  conv.messages = branch.messages;
+  conv.currentBranchLabel = branch.label;
+  conv.branches.push(current);
+  if (conv.branches.length > 8) conv.branches.splice(0, conv.branches.length - 8);
+  conv.updatedAt = Date.now();
+
+  persist();
+  renderSidebar();
+  renderConversation();
+  toggleToc(false);
+  toast(`已切换到「${branch.label}」`);
+}
+
+function renderBranchList(conv) {
+  const branches = conv?.branches || [];
+  dom.tocBranches.hidden = !branches.length;
+  if (!branches.length) {
+    dom.tocBranchList.innerHTML = '';
+    dom.tocBranchCount.textContent = '';
+    return;
+  }
+  dom.tocBranchCount.textContent = `${branches.length + 1} 个分支`;
+  const current = `<button class="toc-branch current" type="button" data-branch-current="1"><span class="toc-branch-dot"></span><span class="toc-branch-label">${escapeHtml(
+    conv.currentBranchLabel || '当前分支',
+  )}</span><span class="toc-branch-meta">当前</span></button>`;
+  const items = branches
+    .map(
+      (branch) =>
+        `<button class="toc-branch" type="button" data-branch-id="${escapeHtml(branch.id)}"><span class="toc-branch-dot"></span><span class="toc-branch-label">${escapeHtml(
+          branch.label,
+        )}</span><span class="toc-branch-meta">${branch.messages.length} 条</span></button>`,
+    )
+    .join('');
+  dom.tocBranchList.innerHTML = current + items;
+}
+
 function renderToc() {
   const conv = activeConversation();
   const questions = conv ? conv.messages.filter((message) => message.role === 'user') : [];
   dom.tocCount.textContent = questions.length ? `${questions.length} 个提问` : '';
   if (!questions.length) {
     dom.tocList.innerHTML = '<div class="toc-empty">还没有提问</div>';
-    return;
+  } else {
+    dom.tocList.innerHTML = questions
+      .map(
+        (message, index) =>
+          `<button class="toc-item" type="button" data-toc-id="${escapeHtml(message.id)}"><span class="toc-index">${
+            index + 1
+          }</span><span class="toc-text">${escapeHtml(tocPreview(message.content))}</span></button>`,
+      )
+      .join('');
+    syncTocActive();
   }
-  dom.tocList.innerHTML = questions
-    .map(
-      (message, index) =>
-        `<button class="toc-item" type="button" data-toc-id="${escapeHtml(message.id)}"><span class="toc-index">${
-          index + 1
-        }</span><span class="toc-text">${escapeHtml(tocPreview(message.content))}</span></button>`,
-    )
-    .join('');
-  syncTocActive();
+  renderBranchList(conv);
 }
 
 function syncTocActive() {
@@ -814,8 +901,8 @@ function beginEditMessage(article, message) {
   const saveBtn = box.querySelector('[data-edit-action="save"]');
   textarea.value = message.content;
   hint.textContent = trailing
-    ? `保存后会删除这条提问之后的 ${trailing} 条消息，并重新生成回答。`
-    : '保存后会重新生成这条回答。';
+    ? `保存后会保留当前对话为分支（含之后 ${trailing} 条消息），并从修改后的提问重新生成。`
+    : '保存后会保留当前回答为分支，并重新生成。';
 
   const autosize = () => {
     textarea.style.height = 'auto';
@@ -852,7 +939,9 @@ async function saveEditedMessage(messageId, rawText) {
   const trailing = conv.messages.length - index - 1;
   if (
     trailing &&
-    !confirm(`修改这条提问会删除它之后的 ${trailing} 条消息，并重新生成回答。继续吗？`)
+    !confirm(
+      `修改这条提问会保留当前对话为一个分支，并从修改后的提问重新生成。继续吗？`,
+    )
   ) {
     return false;
   }
@@ -862,6 +951,8 @@ async function saveEditedMessage(messageId, rawText) {
     return false;
   }
 
+  preserveBranch(conv, '修改前的分支');
+  conv.currentBranchLabel = '修改后的分支';
   conv.messages = conv.messages.slice(0, index + 1);
   const userMessage = conv.messages[index];
   userMessage.content = text;
@@ -876,6 +967,7 @@ async function saveEditedMessage(messageId, rawText) {
   persist();
   renderSidebar();
   renderConversation();
+  toast('当前对话已保留为分支，可在对话目录中切换');
   await streamAssistant(conv, assistant);
   return true;
 }
@@ -1306,10 +1398,8 @@ async function regenerate(targetId = null) {
   }
   if (userIndex < 0) return;
 
-  if (targetIndex >= 0 && conv.messages.length > userIndex + 2) {
-    if (!confirm('重新生成这条回答会删除它之后的对话消息。继续吗？')) return;
-  }
-
+  preserveBranch(conv, '重新生成前的分支');
+  conv.currentBranchLabel = '重新生成后的分支';
   conv.messages = conv.messages.slice(0, userIndex + 1);
   const assistant = createAssistantMessage();
   conv.messages.push(assistant);
@@ -1317,6 +1407,7 @@ async function regenerate(targetId = null) {
   persist();
   renderSidebar();
   renderConversation({ keepScroll: true });
+  toast('旧回答已保留为分支，可在对话目录中切换');
   await streamAssistant(conv, assistant);
 }
 
@@ -1962,6 +2053,11 @@ function wireEvents() {
     const item = event.target.closest('[data-toc-id]');
     if (!item) return;
     jumpToTocMessage(item.dataset.tocId);
+  });
+  dom.tocBranchList.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-branch-id]');
+    if (!item) return;
+    switchBranch(item.dataset.branchId);
   });
   let tocScrollFrame = 0;
   dom.chatScroll.addEventListener(
