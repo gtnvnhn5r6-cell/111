@@ -174,7 +174,7 @@ node build-pages.mjs
 - **导出**：右上角「导入 / 导出」→「导出全部对话（ZIP）」，或设置 →「对话数据」→「导出全部（ZIP）」。
 - ZIP 内包含 `manifest.json`、`README.txt` 和 `conversations/*.json`；每个对话是独立、可读的 JSON，保留消息、模型、思考过程和 token 用量。
 - **导入**：选择本应用导出的 ZIP（也接受单个 `.json` 文件）。导入会与现有对话合并，不会删除现有记录；相同 ID 的对话保留更新时间较新的版本。ZIP 采用流式读取，每次只解压一个文件并立即写入数据库；单个文件损坏会跳过，不影响其余对话。单个 `.json` 文件仍会整体读入内存，超大备份建议使用 ZIP。
-- **兼容 Chatbox 导出**：也支持 Chatbox 的 `chat_sessions/*.json` 格式（`fragments` 里的 REQUEST / RESPONSE / THINK）；附件会以文字标注保留，联网搜索等工具调用会跳过。
+- **兼容 Chatbox 导出**：也支持 Chatbox 的 `chat_sessions/*.json` 格式（`fragments` 里的 REQUEST / RESPONSE / THINK）；附件会以文字标注保留，联网搜索等工具调用会跳过。Chatbox 用 `parent_id` / `current_message_id` 保存修改和重新生成产生的树形分支；导入时只走当前活动路径，其他提问/回答分支转成轮次版本，不会展平成额外提问。
 - 导入保护上限：文件最大 200 MB、单个 JSON 解压后最大 100 MB、解压总量最大 300 MB、最多 2000 个 ZIP entry；浏览器本地最多保留 80 个对话。超出上限的记录会被跳过并在提示中说明。
 - 备份可能包含聊天内容，请妥善保管，不要上传到公开位置。
 

@@ -3027,41 +3027,156 @@ function fragmentFileNote(fragments) {
 
 // Chatbox's JSON export uses `chat_sessions/*.json`, uppercase roles and
 // `fragments` (REQUEST / RESPONSE / THINK / FILE) instead of `content`.
+function externalMessageFromRaw(raw) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.fragments)) return null;
+  const role = String(raw.role || '').toLowerCase();
+  if (role !== 'user' && role !== 'assistant') return null;
+
+  const content =
+    role === 'user'
+      ? fragmentText(raw.fragments, 'REQUEST') + fragmentFileNote(raw.fragments)
+      : fragmentText(raw.fragments, 'RESPONSE');
+  const reasoning = role === 'assistant' ? fragmentText(raw.fragments, 'THINK') : '';
+  if (!content.trim() && !reasoning.trim()) return null;
+
+  const think = raw.fragments.find((fragment) => fragment && fragment.type === 'THINK');
+  const elapsed = Number(think?.elapsed_secs);
+  const timestamp = Date.parse(raw.inserted_at) || 0;
+  return {
+    id: String(raw.id ?? uid()),
+    role,
+    content,
+    reasoning,
+    model: 'deepseek-flash',
+    deepThink: Boolean(raw.thinking_enabled || reasoning),
+    ts: timestamp || Date.now(),
+    error: '',
+    stopped: false,
+    tokens: null,
+    thinkingMs: Number.isFinite(elapsed) && elapsed > 0 ? Math.round(elapsed * 1000) : 0,
+  };
+}
+
 function convertExternalChatSession(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.messages)) return null;
   if (!value.messages.some((message) => Array.isArray(message?.fragments))) return null;
 
-  const messages = [];
+  const nodes = [];
+  const byId = new Map();
   for (const raw of value.messages) {
     if (!raw || typeof raw !== 'object' || !Array.isArray(raw.fragments)) continue;
-    const role = String(raw.role || '').toLowerCase();
-    if (role !== 'user' && role !== 'assistant') continue;
+    const id = String(raw.id ?? uid());
+    if (byId.has(id)) continue;
+    const node = {
+      id,
+      raw,
+      parentId: raw.parent_id === null || raw.parent_id === undefined || raw.parent_id === ''
+        ? null
+        : String(raw.parent_id),
+      message: externalMessageFromRaw(raw),
+      ts: Date.parse(raw.inserted_at) || 0,
+      children: [],
+    };
+    nodes.push(node);
+    byId.set(id, node);
+  }
+  if (!nodes.length) return null;
 
-    const content =
-      role === 'user'
-        ? fragmentText(raw.fragments, 'REQUEST') + fragmentFileNote(raw.fragments)
-        : fragmentText(raw.fragments, 'RESPONSE');
-    const reasoning = role === 'assistant' ? fragmentText(raw.fragments, 'THINK') : '';
-    if (!content.trim() && !reasoning.trim()) continue;
+  const roots = [];
+  for (const node of nodes) {
+    const parent = node.parentId ? byId.get(node.parentId) : null;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
 
-    const think = raw.fragments.find((fragment) => fragment && fragment.type === 'THINK');
-    const elapsed = Number(think?.elapsed_secs);
-    const timestamp = Date.parse(raw.inserted_at) || 0;
-    messages.push({
-      id: String(raw.id ?? uid()),
-      role,
-      content,
-      reasoning,
-      model: 'deepseek-flash',
-      deepThink: Boolean(raw.thinking_enabled || reasoning),
-      ts: timestamp || Date.now(),
-      error: '',
-      stopped: false,
-      tokens: null,
-      thinkingMs: Number.isFinite(elapsed) && elapsed > 0 ? Math.round(elapsed * 1000) : 0,
-    });
+  // Chatbox stores edits/regenerations as sibling messages in a tree. The
+  // export's current_message_id points at the active leaf; walking its parent
+  // chain keeps only the visible conversation instead of flattening every
+  // alternate branch into extra turns.
+  let leaf = byId.get(String(value.current_message_id ?? '')) || null;
+  if (!leaf) {
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      if (nodes[i].message) {
+        leaf = nodes[i];
+        break;
+      }
+    }
+  }
+  let activePath = [];
+  if (leaf) {
+    const seen = new Set();
+    for (let node = leaf; node && !seen.has(node.id); node = node.parentId ? byId.get(node.parentId) : null) {
+      seen.add(node.id);
+      activePath.push(node);
+    }
+    activePath.reverse();
+  }
+  const hasTree = nodes.some((node) => node.parentId && byId.has(node.parentId));
+  if (!hasTree) activePath = nodes;
+
+  let messages = activePath.map((node) => node.message).filter(Boolean);
+  if (!messages.length) {
+    messages = nodes.map((node) => node.message).filter(Boolean);
+    activePath = nodes;
   }
   if (!messages.length) return null;
+
+  const turnBranches = {};
+  if (hasTree && activePath.length < nodes.length) {
+    for (let index = 0; index < activePath.length; index += 1) {
+      const node = activePath[index];
+      const user = node.message;
+      if (!user || user.role !== 'user') continue;
+
+      let activeAssistantNode = null;
+      for (let cursor = index + 1; cursor < activePath.length; cursor += 1) {
+        if (activePath[cursor].message?.role === 'assistant') {
+          activeAssistantNode = activePath[cursor];
+          break;
+        }
+      }
+
+      const group = { activeId: '', activeByQuestion: {}, branches: [] };
+      const questionId = questionKey(user.content);
+
+      for (const sibling of node.children) {
+        if (!sibling.message || sibling.message.role !== 'assistant') continue;
+        if (sibling.id === activeAssistantNode?.id) continue;
+        group.branches.push({
+          id: `external-answer:${sibling.id}`,
+          label: `导入回答 ${group.branches.length + 2}`,
+          kind: 'regen',
+          questionId,
+          createdAt: sibling.message.ts,
+          user,
+          assistant: sibling.message,
+        });
+      }
+
+      const parent = node.parentId ? byId.get(node.parentId) : null;
+      const questionSiblings = (parent ? parent.children : roots).filter(
+        (sibling) => sibling.id !== node.id && sibling.message?.role === 'user',
+      );
+      for (const sibling of questionSiblings) {
+        const answers = sibling.children
+          .filter((child) => child.message?.role === 'assistant')
+          .sort((a, b) => (b.message.ts || 0) - (a.message.ts || 0));
+        if (!answers.length) continue;
+        const question = sibling.message;
+        group.branches.push({
+          id: `external-question:${sibling.id}`,
+          label: `导入提问 ${questionSiblings.indexOf(sibling) + 2}`,
+          kind: 'edit',
+          questionId: questionKey(question.content),
+          createdAt: question.ts,
+          user: question,
+          assistant: answers[0].message,
+        });
+      }
+
+      if (group.branches.length) turnBranches[user.id] = group;
+    }
+  }
 
   const createdAt = Date.parse(value.inserted_at) || messages[0].ts || Date.now();
   const updatedAt = Date.parse(value.updated_at) || messages[messages.length - 1].ts || createdAt;
@@ -3071,6 +3186,7 @@ function convertExternalChatSession(value) {
     createdAt,
     updatedAt,
     messages,
+    turnBranches,
   };
 }
 
