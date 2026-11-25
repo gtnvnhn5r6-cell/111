@@ -1441,6 +1441,21 @@ html[data-theme="dark"] .orb-ring {
   font-variant-numeric: tabular-nums;
 }
 
+.turn-label {
+  color: var(--text-3);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.turn-nav-question {
+  justify-content: flex-end;
+  margin: 0 1px 4px auto;
+}
+
+.turn-nav-question .turn-count {
+  min-width: 26px;
+}
+
 /* Message actions */
 .msg-actions {
   display: flex;
