@@ -412,6 +412,13 @@ const dom = {
   thinkToggle: $('#thinkToggle'),
   searchToggle: $('#searchToggle'),
   settingsModal: $('#settingsModal'),
+  copyModal: $('#copyModal'),
+  copySubtitle: $('#copySubtitle'),
+  copyRoundCount: $('#copyRoundCount'),
+  copyFrom: $('#copyFrom'),
+  copyTo: $('#copyTo'),
+  copyAllBtn: $('#copyAllBtn'),
+  copyRangeBtn: $('#copyRangeBtn'),
   apiKeyInput: $('#apiKeyInput'),
   toggleKey: $('#toggleKey'),
   baseUrlInput: $('#baseUrlInput'),
@@ -760,7 +767,9 @@ function renderSidebar() {
       item.tabIndex = 0;
       item.setAttribute('role', 'button');
       item.setAttribute('aria-label', `打开对话：${conv.title}`);
-      item.innerHTML = `<span class="conv-title">${escapeHtml(conv.title)}</span><button class="conv-delete" type="button" aria-label="删除对话" title="删除">${icon(
+      item.innerHTML = `<span class="conv-title">${escapeHtml(conv.title)}</span><button class="conv-copy" type="button" aria-label="复制对话：${escapeHtml(
+        conv.title,
+      )}" title="复制对话">${icon('i-copy')}</button><button class="conv-delete" type="button" aria-label="删除对话" title="删除">${icon(
         'i-trash',
       )}</button>`;
       group.appendChild(item);
@@ -1443,6 +1452,153 @@ function newChat() {
   renderConversation();
   closeSidebar();
   dom.input.focus();
+}
+
+/* ============================================================
+   Copy conversation
+   ============================================================ */
+
+let copySourceId = null;
+let lastFocusedBeforeCopy = null;
+
+function conversationRounds(conv) {
+  const rounds = [];
+  let current = null;
+  for (const message of conv?.messages || []) {
+    if (message.role === 'user') {
+      if (current) rounds.push(current);
+      current = [message];
+    } else if (message.role === 'assistant' && current) {
+      current.push(message);
+    }
+  }
+  if (current) rounds.push(current);
+  return rounds;
+}
+
+function copyConversation(sourceId, from, to) {
+  const source = state.conversations.find((conv) => conv.id === sourceId);
+  if (!source) return false;
+  if (state.streaming) {
+    toast('请等待当前回答完成后再复制对话');
+    return false;
+  }
+
+  const rounds = conversationRounds(source);
+  if (!rounds.length) {
+    toast('这个对话还没有可复制的问答');
+    return false;
+  }
+
+  const start = Number(from);
+  const end = Number(to);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > rounds.length) {
+    toast(`请输入第 1 到第 ${rounds.length} 轮之间的范围`);
+    return false;
+  }
+  if (start > end) {
+    toast('起始轮次不能大于结束轮次');
+    return false;
+  }
+  if (state.conversations.length >= MAX_CONVERSATIONS) {
+    toast(`最多保留 ${MAX_CONVERSATIONS} 个对话，请先删除一些旧对话`);
+    return false;
+  }
+
+  const selected = rounds.slice(start - 1, end).flat();
+  if (!selected.length) {
+    toast('所选轮次没有可复制的内容');
+    return false;
+  }
+
+  const messages = selected.map((message) => {
+    const cloned = normalizeMessage(JSON.parse(JSON.stringify(message)));
+    cloned.id = uid();
+    cloned.streaming = false;
+    cloned.searching = false;
+    delete cloned.startedAt;
+    return cloned;
+  });
+
+  const now = Date.now();
+  const base = String(source.title || '对话').replace(/\s+/g, ' ').trim().slice(0, 60) || '对话';
+  const title = start === 1 && end === rounds.length
+    ? `${base} · 副本`
+    : `${base} · 第${start}${start === end ? '' : `-${end}`}轮`;
+
+  const copy = {
+    id: uid(),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    currentBranchLabel: '主分支',
+    messages,
+    branches: [],
+    turnBranches: {},
+  };
+
+  const previousActive = state.activeId;
+  state.conversations.unshift(copy);
+  state.activeId = copy.id;
+  if (!persist()) {
+    state.conversations = state.conversations.filter((conv) => conv.id !== copy.id);
+    state.activeId = previousActive;
+    persist();
+    toast('复制失败：浏览器本地存储空间不足，请先清理旧对话');
+    return false;
+  }
+
+  state.search = '';
+  dom.search.value = '';
+  renderSidebar();
+  renderConversation();
+  closeSidebar();
+  closeCopyDialog();
+  toast(`已复制为「${copy.title}」`);
+  return true;
+}
+
+function openCopyDialog(sourceId) {
+  const source = state.conversations.find((conv) => conv.id === sourceId);
+  if (!source) return;
+  if (state.streaming) {
+    toast('请等待当前回答完成后再复制对话');
+    return;
+  }
+
+  const rounds = conversationRounds(source);
+  if (!rounds.length) {
+    toast('这个对话还没有可复制的问答');
+    return;
+  }
+
+  copySourceId = sourceId;
+  lastFocusedBeforeCopy = document.activeElement;
+  dom.copySubtitle.textContent = `将「${source.title}」复制为一个新对话。`;
+  dom.copyRoundCount.textContent = String(rounds.length);
+  dom.copyFrom.min = '1';
+  dom.copyFrom.max = String(rounds.length);
+  dom.copyTo.min = '1';
+  dom.copyTo.max = String(rounds.length);
+  dom.copyFrom.value = '1';
+  dom.copyTo.value = String(rounds.length);
+  dom.copyModal.hidden = false;
+  setTimeout(() => dom.copyFrom.focus(), 40);
+}
+
+function closeCopyDialog() {
+  if (dom.copyModal.hidden) return;
+  dom.copyModal.hidden = true;
+  copySourceId = null;
+  lastFocusedBeforeCopy?.focus?.();
+  lastFocusedBeforeCopy = null;
+}
+
+function copySelectedRange() {
+  if (!copySourceId) return;
+  const from = Number.parseInt(dom.copyFrom.value, 10);
+  const to = Number.parseInt(dom.copyTo.value, 10);
+  copyConversation(copySourceId, from, to);
 }
 
 /* ============================================================
@@ -2740,6 +2896,11 @@ function wireEvents() {
   dom.convList.addEventListener('click', (event) => {
     const item = event.target.closest('.conv-item');
     if (!item) return;
+    if (event.target.closest('.conv-copy')) {
+      event.stopPropagation();
+      openCopyDialog(item.dataset.id);
+      return;
+    }
     if (event.target.closest('.conv-delete')) {
       event.stopPropagation();
       deleteConversation(item.dataset.id);
@@ -2842,6 +3003,24 @@ function wireEvents() {
     if (action.dataset.action === 'regenerate') regenerate(message.id);
   });
 
+  // Copy conversation
+  $$('[data-close-copy]').forEach((el) => el.addEventListener('click', closeCopyDialog));
+  dom.copyAllBtn.addEventListener('click', () => {
+    if (!copySourceId) return;
+    const source = state.conversations.find((conv) => conv.id === copySourceId);
+    if (!source) return;
+    copyConversation(copySourceId, 1, conversationRounds(source).length);
+  });
+  dom.copyRangeBtn.addEventListener('click', copySelectedRange);
+  [dom.copyFrom, dom.copyTo].forEach((input) => {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        copySelectedRange();
+      }
+    });
+  });
+
   // Settings
   $$('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
   dom.toggleKey.addEventListener('click', () => {
@@ -2860,6 +3039,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (!dom.copyModal.hidden) closeCopyDialog();
       if (!dom.settingsModal.hidden) closeSettings();
       if (!dom.modelMenu.hidden) toggleModelMenu(false);
       if (!dom.dataMenu.hidden) toggleDataMenu(false);

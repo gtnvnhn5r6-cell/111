@@ -344,7 +344,8 @@ a {
   font-size: 13.5px;
 }
 
-.conv-delete {
+.conv-delete,
+.conv-copy {
   opacity: 0;
   display: grid;
   place-items: center;
@@ -358,19 +359,35 @@ a {
   transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
 }
 
-.conv-delete .icon {
+.conv-delete .icon,
+.conv-copy .icon {
   width: 14px;
   height: 14px;
 }
 
 .conv-item:hover .conv-delete,
-.conv-delete:focus-visible {
+.conv-item:hover .conv-copy,
+.conv-item.active .conv-copy,
+.conv-delete:focus-visible,
+.conv-copy:focus-visible {
   opacity: 1;
 }
 
 .conv-delete:hover {
   background: rgba(229, 72, 77, 0.1);
   color: var(--danger);
+}
+
+.conv-copy:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (hover: none) {
+  .conv-delete,
+  .conv-copy {
+    opacity: 1;
+  }
 }
 
 .conv-empty {
@@ -2004,6 +2021,96 @@ html[data-theme="dark"] .search-chip[aria-pressed="true"] {
   box-shadow: var(--shadow-lg);
   animation: modalIn 0.24s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
+}
+
+.copy-card {
+  width: min(480px, 100%);
+}
+
+.copy-total {
+  margin: 4px 0 16px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.copy-total strong {
+  color: var(--text);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.copy-all {
+  width: 100%;
+  justify-content: center;
+}
+
+.copy-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 14px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.copy-divider::before,
+.copy-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+}
+
+.copy-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.copy-range label {
+  display: inline-flex;
+  flex: 1 1 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.copy-range input {
+  width: 64px;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.copy-range input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.copy-range-sep {
+  color: var(--text-3);
+}
+
+.copy-range .ghost-btn {
+  flex: 1 1 100%;
+  justify-content: center;
+  margin-left: 0;
+}
+
+.copy-hint {
+  margin-top: 14px;
+  line-height: 1.6;
 }
 
 .modal-head {

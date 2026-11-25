@@ -361,6 +361,38 @@
       </section>
     </div>
 
+    <div id="copyModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-copy></div>
+      <section class="modal-card copy-card" role="dialog" aria-modal="true" aria-labelledby="copyTitle">
+        <header class="modal-head">
+          <div>
+            <h2 id="copyTitle">复制对话</h2>
+            <p id="copySubtitle">选择要复制的对话范围</p>
+          </div>
+          <button class="icon-btn" type="button" data-close-copy aria-label="关闭复制对话">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </header>
+
+        <div class="modal-body">
+          <div class="copy-total">共 <strong id="copyRoundCount">0</strong> 轮对话</div>
+
+          <button id="copyAllBtn" class="primary-btn copy-all" type="button">全部复制</button>
+
+          <div class="copy-divider"><span>或复制指定轮次</span></div>
+
+          <div class="copy-range">
+            <label>第 <input id="copyFrom" type="number" min="1" step="1" inputmode="numeric" aria-label="起始轮次" /> 轮</label>
+            <span class="copy-range-sep">到</span>
+            <label>第 <input id="copyTo" type="number" min="1" step="1" inputmode="numeric" aria-label="结束轮次" /> 轮</label>
+            <button id="copyRangeBtn" class="ghost-btn" type="button">复制所选轮次</button>
+          </div>
+
+          <p class="field-hint copy-hint">一轮 = 一条提问及其回答；m / n 按当前对话从上到下计数。复制只会生成新对话，不会修改原对话。</p>
+        </div>
+      </section>
+    </div>
+
     <div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
     <input id="zipInput" type="file" accept=".zip,.json,application/zip,application/json" hidden />
 
