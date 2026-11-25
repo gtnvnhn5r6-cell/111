@@ -2113,6 +2113,122 @@ html[data-theme="dark"] .search-chip[aria-pressed="true"] {
   line-height: 1.6;
 }
 
+.copy-summary {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.copy-summary-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.copy-summary-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.copy-summary-toggle.disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.copy-summary-fields {
+  margin: 11px 0 0 24px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-soft);
+}
+
+.copy-summary-length {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.copy-summary-length input {
+  width: 68px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.copy-summary-length input:focus,
+.copy-summary-prompt textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.copy-summary-prompt {
+  display: block;
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.copy-summary-prompt span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.copy-summary-prompt textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.copy-summary-hint {
+  margin: 8px 0 0;
+  line-height: 1.55;
+}
+
+.copy-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.copy-progress .search-spinner {
+  margin-top: 0;
+}
+
+@media (max-width: 520px) {
+  .copy-summary-fields {
+    margin-left: 0;
+  }
+}
+
 .modal-head {
   display: flex;
   align-items: flex-start;

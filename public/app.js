@@ -419,6 +419,16 @@ const dom = {
   copyTo: $('#copyTo'),
   copyAllBtn: $('#copyAllBtn'),
   copyRangeBtn: $('#copyRangeBtn'),
+  copySummary: $('#copySummary'),
+  copySummaryToggle: $('#copySummaryToggle'),
+  copySummaryLabel: $('#copySummaryLabel'),
+  copySummaryFields: $('#copySummaryFields'),
+  copySummaryMin: $('#copySummaryMin'),
+  copySummaryMax: $('#copySummaryMax'),
+  copySummaryPrompt: $('#copySummaryPrompt'),
+  copySummaryHint: $('#copySummaryHint'),
+  copyProgress: $('#copyProgress'),
+  copyProgressText: $('#copyProgressText'),
   apiKeyInput: $('#apiKeyInput'),
   toggleKey: $('#toggleKey'),
   baseUrlInput: $('#baseUrlInput'),
@@ -1460,6 +1470,9 @@ function newChat() {
 
 let copySourceId = null;
 let lastFocusedBeforeCopy = null;
+let copyBusy = false;
+let copyAbortController = null;
+let copyAbortRequested = false;
 
 function conversationRounds(conv) {
   const rounds = [];
@@ -1476,9 +1489,196 @@ function conversationRounds(conv) {
   return rounds;
 }
 
-function copyConversation(sourceId, from, to) {
+function summaryTranscript(rounds) {
+  return rounds.map((round, index) => {
+    const lines = round.map((message) => {
+      const role = message.role === 'user' ? '用户' : '助手';
+      return `${role}：${String(message.content || '').trim()}`;
+    });
+    return `【第 ${index + 1} 轮】\n${lines.join('\n')}`;
+  }).join('\n\n');
+}
+
+async function collectSummaryStream(response) {
+  if (!response.body) throw new Error('当前浏览器不支持流式响应。');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let text = '';
+  let done = false;
+
+  const handle = (raw) => {
+    const dataLines = raw
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim());
+    if (!dataLines.length) return false;
+    const data = dataLines.join('\n');
+    if (data === '[DONE]') return true;
+
+    let payload;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return false;
+    }
+    if (payload?.error) throw new Error(payload.error.message || '摘要生成失败。');
+    const choice = payload?.choices?.[0];
+    if (typeof choice?.delta?.content === 'string') text += choice.delta.content;
+    else if (typeof choice?.message?.content === 'string') text += choice.message.content;
+    return false;
+  };
+
+  while (!done) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary >= 0) {
+      done = handle(buffer.slice(0, boundary)) || done;
+      buffer = buffer.slice(boundary + 2);
+      if (done) break;
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+  buffer += decoder.decode();
+  if (!done && buffer.trim()) handle(buffer);
+  return text.trim();
+}
+
+async function requestConversationSummary(priorRounds, start, minChars, maxChars, special) {
+  if (PAGES_MODE && !state.settings.apiKey.trim()) {
+    throw new Error('请先在设置中填写 API Key，再生成摘要。');
+  }
+  const priorCount = start - 1;
+  const transcript = summaryTranscript(priorRounds);
+  const specialText = String(special || '').trim();
+  const requirement = `生成 ${minChars}-${maxChars} 字的摘要${specialText ? `，并且${specialText}` : ''}`;
+  const prompt = [
+    `请将下面这段前文对话${requirement}。`,
+    '要求：只输出摘要正文，不要输出标题、解释、代码块或“摘要”二字；保留关键事实、数字、结论、待办和用户偏好，便于后续对话继续。',
+    '',
+    `前文对话（第 1-${priorCount} 轮）：`,
+    transcript,
+  ].join('\n');
+
+  const body = {
+    model: 'deepseek-flash',
+    messages: [
+      { role: 'system', content: '你是一名严谨的对话摘要助手，只输出符合要求的中文摘要正文。' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.3,
+    reasoning_effort: 'none',
+    max_tokens: Math.min(6000, Math.max(512, Math.ceil(maxChars * 2.4) + 256)),
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.settings.apiKey.trim()) headers.Authorization = `Bearer ${state.settings.apiKey.trim()}`;
+  if (!PAGES_MODE && state.settings.baseUrl.trim()) headers['x-api-base'] = state.settings.baseUrl.trim();
+
+  const controller = new AbortController();
+  copyAbortController = controller;
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetch(chatEndpoint(), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let message = `摘要生成失败（HTTP ${response.status}）`;
+      try {
+        const payload = await response.json();
+        message = payload?.error?.message || message;
+      } catch {
+        /* non-JSON error */
+      }
+      throw new Error(message);
+    }
+    const summary = await collectSummaryStream(response);
+    if (!summary) throw new Error('模型没有返回摘要内容，请重试。');
+    return summary;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      if (!copyAbortRequested) throw new Error('摘要生成超时，请重试。');
+      return null;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (copyAbortController === controller) copyAbortController = null;
+  }
+}
+
+function summaryMessages(summary, start) {
+  const now = Date.now();
+  return [
+    {
+      id: uid(),
+      role: 'user',
+      content: `【前文摘要 · 第 1${start - 1 === 1 ? '' : `-${start - 1}`} 轮】\n${summary}`,
+      ts: now,
+      model: 'deepseek-flash',
+    },
+    {
+      id: uid(),
+      role: 'assistant',
+      content: '已了解前文摘要，请继续。',
+      ts: now + 1,
+      model: 'deepseek-flash',
+    },
+  ];
+}
+
+function setCopyBusy(busy, label = '正在生成摘要…') {
+  copyBusy = busy;
+  dom.copyAllBtn.disabled = busy;
+  dom.copyRangeBtn.disabled = busy;
+  [dom.copyFrom, dom.copyTo, dom.copySummary, dom.copySummaryMin, dom.copySummaryMax, dom.copySummaryPrompt]
+    .forEach((element) => { element.disabled = busy; });
+  dom.copyProgress.hidden = !busy;
+  dom.copyProgressText.textContent = label;
+  dom.copyRangeBtn.textContent = busy ? label : '复制所选轮次';
+  if (!busy) syncCopySummaryState();
+}
+
+function syncCopySummaryState() {
+  const total = Number.parseInt(dom.copyRoundCount.textContent, 10) || 0;
+  const from = Number.parseInt(dom.copyFrom.value, 10) || 1;
+  const available = total > 1 && from > 1 && !copyBusy;
+  dom.copySummary.disabled = !available;
+  dom.copySummaryToggle.classList.toggle('disabled', !available);
+  if (!available) dom.copySummary.checked = false;
+  dom.copySummaryFields.hidden = !dom.copySummary.checked;
+  dom.copySummaryLabel.textContent = available
+    ? `将第 ${from} 轮前的对话生成摘要，作为新对话第一轮`
+    : '将起始轮次前的对话生成摘要（起始轮需大于 1）';
+  if (!available) {
+    dom.copySummaryHint.textContent = '起始轮为第 1 轮，前面没有可摘要的对话。';
+    return;
+  }
+  const priorLabel = from === 2 ? '第 1 轮' : `第 1 至 ${from - 1} 轮`;
+  dom.copySummaryHint.textContent = `将${priorLabel}发送给模型生成摘要，摘要作为新对话第一轮，后面接第 ${from} 轮及之后的对话。`;
+}
+
+function parseSummarySettings() {
+  const min = Number.parseInt(dom.copySummaryMin.value, 10);
+  const max = Number.parseInt(dom.copySummaryMax.value, 10);
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || max < 1 || min > max || max > 3000) {
+    toast('请输入有效的摘要字数范围，例如 200-300（最多 3000 字）', 'error');
+    return null;
+  }
+  return { min, max, prompt: dom.copySummaryPrompt.value.trim() };
+}
+
+async function copyConversation(sourceId, from, to, options = {}) {
   const source = state.conversations.find((conv) => conv.id === sourceId);
   if (!source) return false;
+  if (copyBusy) return false;
   if (state.streaming) {
     toast('请等待当前回答完成后再复制对话');
     return false;
@@ -1511,6 +1711,38 @@ function copyConversation(sourceId, from, to) {
     return false;
   }
 
+  let summaryText = '';
+  if (options.summary) {
+    if (start <= 1) {
+      toast('起始轮为第 1 轮，前面没有可摘要的对话', 'error');
+      return false;
+    }
+    const summaryOptions = parseSummarySettings();
+    if (!summaryOptions) return false;
+    if (PAGES_MODE && !state.settings.apiKey.trim()) {
+      toast('请先在设置中填写 API Key，再生成摘要', 'error');
+      return false;
+    }
+
+    copyAbortRequested = false;
+    setCopyBusy(true);
+    try {
+      summaryText = await requestConversationSummary(
+        rounds.slice(0, start - 1),
+        start,
+        summaryOptions.min,
+        summaryOptions.max,
+        summaryOptions.prompt,
+      );
+    } catch (error) {
+      if (!copyAbortRequested) toast(`摘要生成失败：${error.message}`, 'error');
+      return false;
+    } finally {
+      setCopyBusy(false);
+    }
+    if (!summaryText || !copySourceId || dom.copyModal.hidden) return false;
+  }
+
   const messages = selected.map((message) => {
     const cloned = normalizeMessage(JSON.parse(JSON.stringify(message)));
     cloned.id = uid();
@@ -1519,12 +1751,15 @@ function copyConversation(sourceId, from, to) {
     delete cloned.startedAt;
     return cloned;
   });
+  if (summaryText) messages.unshift(...summaryMessages(summaryText, start));
 
   const now = Date.now();
   const base = String(source.title || '对话').replace(/\s+/g, ' ').trim().slice(0, 60) || '对话';
-  const title = start === 1 && end === rounds.length
-    ? `${base} · 副本`
-    : `${base} · 第${start}${start === end ? '' : `-${end}`}轮`;
+  const title = summaryText
+    ? `${base} · 摘要+第${start}${start === end ? '' : `-${end}`}轮`
+    : start === 1 && end === rounds.length
+      ? `${base} · 副本`
+      : `${base} · 第${start}${start === end ? '' : `-${end}`}轮`;
 
   const copy = {
     id: uid(),
@@ -1582,23 +1817,34 @@ function openCopyDialog(sourceId) {
   dom.copyTo.max = String(rounds.length);
   dom.copyFrom.value = '1';
   dom.copyTo.value = String(rounds.length);
+  dom.copySummary.checked = false;
+  dom.copySummaryMin.value = '200';
+  dom.copySummaryMax.value = '300';
+  dom.copySummaryPrompt.value = '';
+  copyAbortRequested = false;
+  setCopyBusy(false);
   dom.copyModal.hidden = false;
   setTimeout(() => dom.copyFrom.focus(), 40);
 }
 
 function closeCopyDialog() {
   if (dom.copyModal.hidden) return;
+  if (copyBusy) {
+    copyAbortRequested = true;
+    copyAbortController?.abort();
+  }
   dom.copyModal.hidden = true;
   copySourceId = null;
+  setCopyBusy(false);
   lastFocusedBeforeCopy?.focus?.();
   lastFocusedBeforeCopy = null;
 }
 
 function copySelectedRange() {
-  if (!copySourceId) return;
+  if (!copySourceId || copyBusy) return;
   const from = Number.parseInt(dom.copyFrom.value, 10);
   const to = Number.parseInt(dom.copyTo.value, 10);
-  copyConversation(copySourceId, from, to);
+  copyConversation(copySourceId, from, to, { summary: dom.copySummary.checked });
 }
 
 /* ============================================================
@@ -3006,13 +3252,15 @@ function wireEvents() {
   // Copy conversation
   $$('[data-close-copy]').forEach((el) => el.addEventListener('click', closeCopyDialog));
   dom.copyAllBtn.addEventListener('click', () => {
-    if (!copySourceId) return;
+    if (!copySourceId || copyBusy) return;
     const source = state.conversations.find((conv) => conv.id === copySourceId);
     if (!source) return;
     copyConversation(copySourceId, 1, conversationRounds(source).length);
   });
   dom.copyRangeBtn.addEventListener('click', copySelectedRange);
+  dom.copySummary.addEventListener('change', syncCopySummaryState);
   [dom.copyFrom, dom.copyTo].forEach((input) => {
+    input.addEventListener('input', syncCopySummaryState);
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();

@@ -388,7 +388,32 @@
             <button id="copyRangeBtn" class="ghost-btn" type="button">复制所选轮次</button>
           </div>
 
-          <p class="field-hint copy-hint">一轮 = 一条提问及其回答；m / n 按当前对话从上到下计数。复制只会生成新对话，不会修改原对话。</p>
+          <div class="copy-summary">
+            <label class="copy-summary-toggle" id="copySummaryToggle">
+              <input id="copySummary" type="checkbox" />
+              <span id="copySummaryLabel">将起始轮次前的对话生成摘要，作为新对话第一轮</span>
+            </label>
+            <div id="copySummaryFields" class="copy-summary-fields" hidden>
+              <div class="copy-summary-length">
+                <span>摘要字数</span>
+                <input id="copySummaryMin" type="number" min="1" max="3000" step="1" inputmode="numeric" value="200" aria-label="摘要最少字数" />
+                <span>—</span>
+                <input id="copySummaryMax" type="number" min="1" max="3000" step="1" inputmode="numeric" value="300" aria-label="摘要最多字数" />
+                <span>字</span>
+              </div>
+              <label class="copy-summary-prompt">
+                <span>特殊要求提示词</span>
+                <textarea id="copySummaryPrompt" rows="2" maxlength="500" placeholder="例如：保留关键数字、结论和待办事项"></textarea>
+              </label>
+              <p id="copySummaryHint" class="field-hint copy-summary-hint"></p>
+            </div>
+            <div id="copyProgress" class="copy-progress" hidden>
+              <span class="search-spinner" aria-hidden="true"></span>
+              <span id="copyProgressText">正在生成摘要…</span>
+            </div>
+          </div>
+
+          <p class="field-hint copy-hint">一轮 = 一条提问及其回答；m / n 按当前对话从上到下计数。复制只会生成新对话，不会修改原对话；「全部复制」不生成摘要。</p>
         </div>
       </section>
     </div>
