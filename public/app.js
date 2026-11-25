@@ -108,6 +108,123 @@ function writeStorage(key, value) {
   }
 }
 
+/* Conversations live in IndexedDB rather than localStorage: a long chat,
+   branches and copied conversations can exceed the ~5 MB localStorage cap.
+   localStorage is still used as a one-time migration source and as a
+   fallback when IndexedDB is unavailable. */
+const CONVERSATION_DB_NAME = 'dsc.chatbox.v1';
+const CONVERSATION_DB_STORE = 'conversations';
+const CONVERSATION_DB_KEY = 'all';
+
+let conversationDbPromise = null;
+let conversationWriteChain = Promise.resolve();
+let conversationStoreFallback = false;
+
+function openConversationDb() {
+  if (!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB unavailable'));
+  if (conversationDbPromise) return conversationDbPromise;
+  conversationDbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(CONVERSATION_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(CONVERSATION_DB_STORE)) {
+        db.createObjectStore(CONVERSATION_DB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+    request.onblocked = () => reject(new Error('IndexedDB blocked'));
+  });
+  return conversationDbPromise;
+}
+
+async function readConversationDb() {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_DB_STORE, 'readonly');
+    const request = tx.objectStore(CONVERSATION_DB_STORE).get(CONVERSATION_DB_KEY);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB read failed'));
+  });
+}
+
+async function writeConversationDb(conversations) {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_DB_STORE, 'readwrite');
+    tx.objectStore(CONVERSATION_DB_STORE).put(conversations, CONVERSATION_DB_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+  });
+}
+
+async function clearConversationDb() {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_DB_STORE, 'readwrite');
+    tx.objectStore(CONVERSATION_DB_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB clear failed'));
+  });
+}
+
+function queueConversationSave() {
+  const snapshot = state.conversations.slice(0, MAX_CONVERSATIONS);
+  if (!('indexedDB' in window) || conversationStoreFallback) {
+    return writeStorage(STORAGE.conversations, snapshot);
+  }
+  conversationWriteChain = conversationWriteChain
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await writeConversationDb(snapshot);
+      } catch (error) {
+        conversationStoreFallback = true;
+        console.warn('IndexedDB write failed; falling back to localStorage', error);
+        if (!writeStorage(STORAGE.conversations, snapshot)) {
+          toast('保存失败：浏览器存储空间不足，请先导出备份并清理旧对话', 'error');
+        }
+      }
+    });
+  return true;
+}
+
+function saveActiveConversationId() {
+  try {
+    if (state.activeId) localStorage.setItem(STORAGE.active, state.activeId);
+    else localStorage.removeItem(STORAGE.active);
+  } catch (error) {
+    console.warn('localStorage active write failed', error);
+  }
+}
+
+async function initConversationStore() {
+  if (state.demo || !('indexedDB' in window)) return;
+  try {
+    const stored = await readConversationDb();
+    let migrated = false;
+    if (Array.isArray(stored) && stored.length) {
+      state.conversations = stored
+        .map(normalizeConversation)
+        .filter(Boolean)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+    } else if (state.conversations.length) {
+      await writeConversationDb(state.conversations.slice(0, MAX_CONVERSATIONS));
+      migrated = true;
+    }
+    localStorage.removeItem(STORAGE.conversations);
+    if (!state.conversations.some((conv) => conv.id === state.activeId)) {
+      state.activeId = state.conversations[0]?.id || null;
+      saveActiveConversationId();
+    }
+    if (migrated) toast('对话已迁移到浏览器数据库，容量更大');
+  } catch (error) {
+    conversationStoreFallback = true;
+    console.warn('IndexedDB unavailable; keeping localStorage storage', error);
+  }
+}
+
 function loadSettings() {
   const saved = readStorage(STORAGE.settings, {});
   const model = normalizeModel(saved?.model);
@@ -706,13 +823,8 @@ function updateKeyState() {
 }
 
 function persist() {
-  const saved = writeStorage(STORAGE.conversations, state.conversations.slice(0, MAX_CONVERSATIONS));
-  try {
-    if (state.activeId) localStorage.setItem(STORAGE.active, state.activeId);
-    else localStorage.removeItem(STORAGE.active);
-  } catch (error) {
-    console.warn('localStorage active write failed', error);
-  }
+  const saved = queueConversationSave();
+  saveActiveConversationId();
   return saved;
 }
 
@@ -2578,12 +2690,19 @@ function saveSettingsFromModal() {
   toast('设置已保存');
 }
 
-function clearAllData() {
+async function clearAllData() {
   if (!confirm('清除所有本地对话与设置？此操作无法撤销。')) return;
   Object.values(STORAGE).forEach((key) => localStorage.removeItem(key));
   state.conversations = [];
   state.activeId = null;
   state.settings = { ...DEFAULT_SETTINGS };
+  try {
+    conversationWriteChain = conversationWriteChain.catch(() => {});
+    await conversationWriteChain;
+    if ('indexedDB' in window) await clearConversationDb();
+  } catch (error) {
+    console.warn('clear IndexedDB failed', error);
+  }
   closeSettings();
   renderSidebar();
   renderConversation();
@@ -3324,9 +3443,10 @@ async function checkHealth() {
   updateKeyState();
 }
 
-function boot() {
+async function boot() {
   initTheme();
   maybeSeedDemo();
+  await initConversationStore();
   wireEvents();
   updateModelUI();
   updateKeyState();

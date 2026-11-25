@@ -18,7 +18,7 @@
 - 深度思考开关：开启后使用更高的推理力度，并展示可折叠的思考过程
 - 联网搜索开关：与深度思考并列，开启后模型按需搜索网页并在回答下方列出来源
 - 模型：`DeepSeek-V4.1-Flash`（快速）与 `DeepSeek-V4-Pro`（旗舰）
-- 默认情况下，会话和 API Key 只保存在浏览器 `localStorage`，可随时清除；也支持用服务端环境变量提供 Key
+- 会话保存在浏览器 `IndexedDB`，容量远大于 `localStorage`；API Key 仍只保存在 `localStorage`，可随时清除；也支持用服务端环境变量提供 Key
 - 自定义 API 地址，兼容 OpenAI 格式的代理
 - 自写轻量 Markdown 渲染（标题、列表、表格、引用、代码块、链接），全部先转义
 - 可构建为 GitHub Pages 纯静态版：用户自带 API Key，浏览器直连 DeepSeek，不需要服务器
@@ -177,6 +177,13 @@ node build-pages.mjs
 - **兼容 Chatbox 导出**：也支持 Chatbox 的 `chat_sessions/*.json` 格式（`fragments` 里的 REQUEST / RESPONSE / THINK）；附件会以文字标注保留，联网搜索等工具调用会跳过。
 - 浏览器本地最多保留 80 个对话；导入时超出上限的记录会被忽略，并在提示中说明。
 - 备份可能包含聊天内容，请妥善保管，不要上传到公开位置。
+
+### 存储与容量
+
+- 对话、分支和搜索结果保存在浏览器的 `IndexedDB`（数据库 `dsc.chatbox.v1`），不再写入 5 MB 限制的 `localStorage`；API Key、主题和界面设置仍保存在 `localStorage`。
+- 从旧版本升级时，首次打开会自动把 `localStorage` 里的对话迁移到 `IndexedDB`，迁移成功后删除旧的对话副本。
+- `IndexedDB` 不可用（例如某些隐私模式）时会自动回退到 `localStorage`，此时仍可能遇到容量提示；建议先导出 ZIP 再清理旧对话。
+- GitHub Pages 是纯静态托管，没有可写的服务端，无法把对话保存到服务器；如果要做真正的服务端存储，需要额外部署 Node/Vercel/Cloudflare Worker 后端并处理用户隔离。当前方案是在不增加后端的前提下扩大浏览器容量。
 
 ## 预览模式
 
