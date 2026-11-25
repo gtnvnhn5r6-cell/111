@@ -3,7 +3,7 @@
    No framework, no build step.
    ============================================================ */
 
-import { createZip, readZip } from './zip.js';
+import { createZip, readZipEntries } from './zip.js';
 
 const SITE_CONFIG = window.DSC_CONFIG || {};
 const PAGES_MODE = SITE_CONFIG.mode === 'pages';
@@ -33,7 +33,10 @@ const MAX_CONVERSATIONS = 80;
 const BACKUP_FORMAT = 'deepseek-chatbox-backup';
 const CONVERSATION_FORMAT = 'deepseek-chatbox-conversation';
 const BACKUP_VERSION = 1;
-const MAX_IMPORT_FILE_BYTES = 60 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_IMPORT_FILE_SIZE = 100 * 1024 * 1024;
+const MAX_IMPORT_TOTAL_SIZE = 300 * 1024 * 1024;
+const MAX_IMPORT_ENTRIES = 2000;
 const MAX_TURN_EDITS = 10;
 const MAX_TURN_REGENS = 10;
 const MAX_TURN_BRANCHES = 240;
@@ -113,22 +116,43 @@ function writeStorage(key, value) {
    localStorage is still used as a one-time migration source and as a
    fallback when IndexedDB is unavailable. */
 const CONVERSATION_DB_NAME = 'dsc.chatbox.v1';
+const CONVERSATION_DB_VERSION = 2;
 const CONVERSATION_DB_STORE = 'conversations';
 const CONVERSATION_DB_KEY = 'all';
+const CONVERSATION_RECORD_STORE = 'conversation_records';
 
 let conversationDbPromise = null;
 let conversationWriteChain = Promise.resolve();
 let conversationStoreFallback = false;
+let conversationRevisions = new Map();
+
+function conversationRevision(conv) {
+  return [
+    Number(conv?.updatedAt) || 0,
+    conv?.messages?.length || 0,
+    conv?.title || '',
+    Object.keys(conv?.turnBranches || {}).length,
+  ].join('|');
+}
+
+function rememberConversationRevisions(conversations) {
+  conversationRevisions = new Map(
+    conversations.map((conv) => [conv.id, conversationRevision(conv)]),
+  );
+}
 
 function openConversationDb() {
   if (!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB unavailable'));
   if (conversationDbPromise) return conversationDbPromise;
   conversationDbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(CONVERSATION_DB_NAME, 1);
+    const request = indexedDB.open(CONVERSATION_DB_NAME, CONVERSATION_DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(CONVERSATION_DB_STORE)) {
         db.createObjectStore(CONVERSATION_DB_STORE);
+      }
+      if (!db.objectStoreNames.contains(CONVERSATION_RECORD_STORE)) {
+        db.createObjectStore(CONVERSATION_RECORD_STORE, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -138,7 +162,17 @@ function openConversationDb() {
   return conversationDbPromise;
 }
 
-async function readConversationDb() {
+async function readConversationRecords() {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_RECORD_STORE, 'readonly');
+    const request = tx.objectStore(CONVERSATION_RECORD_STORE).getAll();
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onerror = () => reject(request.error || new Error('IndexedDB read failed'));
+  });
+}
+
+async function readLegacyConversations() {
   const db = await openConversationDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(CONVERSATION_DB_STORE, 'readonly');
@@ -148,11 +182,53 @@ async function readConversationDb() {
   });
 }
 
+async function readConversationDb() {
+  const records = await readConversationRecords();
+  const legacy = await readLegacyConversations();
+  if (Array.isArray(legacy) && legacy.length) {
+    const merged = new Map(records.map((conv) => [conv.id, conv]));
+    legacy.forEach((conv) => {
+      if (conv?.id && !merged.has(conv.id)) merged.set(conv.id, conv);
+    });
+    const all = [...merged.values()];
+    await writeConversationDb(all);
+    return all;
+  }
+  return records;
+}
+
 async function writeConversationDb(conversations) {
   const db = await openConversationDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(CONVERSATION_DB_STORE, 'readwrite');
-    tx.objectStore(CONVERSATION_DB_STORE).put(conversations, CONVERSATION_DB_KEY);
+    const tx = db.transaction([CONVERSATION_RECORD_STORE, CONVERSATION_DB_STORE], 'readwrite');
+    const records = tx.objectStore(CONVERSATION_RECORD_STORE);
+    records.clear();
+    conversations.forEach((conv) => records.put(conv));
+    tx.objectStore(CONVERSATION_DB_STORE).delete(CONVERSATION_DB_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+  });
+}
+
+async function writeConversationChanges(changes, deletions) {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_RECORD_STORE, 'readwrite');
+    const records = tx.objectStore(CONVERSATION_RECORD_STORE);
+    changes.forEach((conv) => records.put(conv));
+    deletions.forEach((id) => records.delete(id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+  });
+}
+
+async function putConversationRecord(conversation) {
+  const db = await openConversationDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CONVERSATION_RECORD_STORE, 'readwrite');
+    tx.objectStore(CONVERSATION_RECORD_STORE).put(conversation);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
     tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
@@ -162,7 +238,8 @@ async function writeConversationDb(conversations) {
 async function clearConversationDb() {
   const db = await openConversationDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(CONVERSATION_DB_STORE, 'readwrite');
+    const tx = db.transaction([CONVERSATION_RECORD_STORE, CONVERSATION_DB_STORE], 'readwrite');
+    tx.objectStore(CONVERSATION_RECORD_STORE).clear();
     tx.objectStore(CONVERSATION_DB_STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error('IndexedDB clear failed'));
@@ -174,11 +251,26 @@ function queueConversationSave() {
   if (!('indexedDB' in window) || conversationStoreFallback) {
     return writeStorage(STORAGE.conversations, snapshot);
   }
+
+  const ids = new Set(snapshot.map((conv) => conv.id));
+  const changes = snapshot.filter(
+    (conv) =>
+      conv.id === state.activeId ||
+      conversationRevision(conv) !== conversationRevisions.get(conv.id),
+  );
+  const deletions = [...conversationRevisions.keys()].filter((id) => !ids.has(id));
+
+  if (!changes.length && !deletions.length) return true;
+
   conversationWriteChain = conversationWriteChain
     .catch(() => {})
     .then(async () => {
       try {
-        await writeConversationDb(snapshot);
+        await writeConversationChanges(changes, deletions);
+        changes.forEach((conv) => {
+          conversationRevisions.set(conv.id, conversationRevision(conv));
+        });
+        deletions.forEach((id) => conversationRevisions.delete(id));
       } catch (error) {
         conversationStoreFallback = true;
         console.warn('IndexedDB write failed; falling back to localStorage', error);
@@ -209,9 +301,13 @@ async function initConversationStore() {
         .map(normalizeConversation)
         .filter(Boolean)
         .sort((a, b) => b.updatedAt - a.updatedAt);
+      rememberConversationRevisions(state.conversations);
     } else if (state.conversations.length) {
       await writeConversationDb(state.conversations.slice(0, MAX_CONVERSATIONS));
+      rememberConversationRevisions(state.conversations);
       migrated = true;
+    } else {
+      rememberConversationRevisions(state.conversations);
     }
     localStorage.removeItem(STORAGE.conversations);
     if (!state.conversations.some((conv) => conv.id === state.activeId)) {
@@ -2732,6 +2828,7 @@ async function clearAllData() {
     conversationWriteChain = conversationWriteChain.catch(() => {});
     await conversationWriteChain;
     if ('indexedDB' in window) await clearConversationDb();
+    conversationRevisions.clear();
   } catch (error) {
     console.warn('clear IndexedDB failed', error);
   }
@@ -3011,30 +3108,29 @@ function collectBackupConversations(value, output) {
   }
 }
 
-async function readBackupEntries(file) {
+async function* readBackupEntries(file, onEntryError) {
   const lower = file.name.toLowerCase();
 
   if (lower.endsWith('.json')) {
-    return [{ name: file.name, text: await file.text() }];
+    yield { name: file.name, text: await file.text() };
+    return;
   }
   if (!lower.endsWith('.zip') && !/zip/i.test(file.type)) {
     throw new Error('请选择 .zip 或 .json 备份文件');
   }
 
-  const entries = await readZip(file, {
-    maxEntries: 500,
-    maxFileSize: 20 * 1024 * 1024,
-    maxTotalSize: 100 * 1024 * 1024,
-  });
   const decoder = new TextDecoder('utf-8');
-  const texts = [];
-  for (const entry of entries) {
+  for await (const entry of readZipEntries(file, {
+    maxEntries: MAX_IMPORT_ENTRIES,
+    maxFileSize: MAX_IMPORT_FILE_SIZE,
+    maxTotalSize: MAX_IMPORT_TOTAL_SIZE,
+    onEntryError,
+  })) {
     const name = entry.name.replace(/\\/g, '/').toLowerCase();
     if (!name.endsWith('.json')) continue;
     if (name.startsWith('__macosx/') || name.includes('/__macosx/')) continue;
-    texts.push({ name: entry.name, text: decoder.decode(entry.data) });
+    yield { name: entry.name, text: decoder.decode(entry.data) };
   }
-  return texts;
 }
 
 async function importChatArchive(file) {
@@ -3044,116 +3140,134 @@ async function importChatArchive(file) {
     return;
   }
   if (file.size > MAX_IMPORT_FILE_BYTES) {
-    toast('备份文件太大（最多 60 MB）', 'error');
+    toast('备份文件太大（最多 200 MB）', 'error');
+    return;
+  }
+  if (!confirm(`导入会与现有对话合并，不会删除已有记录。\n单个文件最大 200 MB，解析后最多保留 ${MAX_CONVERSATIONS} 个对话。继续吗？`)) {
     return;
   }
 
-  let entries;
-  try {
-    entries = await readBackupEntries(file);
-  } catch (error) {
-    toast(`读取失败：${error.message || '不是有效的 ZIP'}`, 'error');
-    return;
-  }
-
-  const rawConversations = [];
   let invalidEntries = 0;
-  for (const entry of entries) {
-    const base = entry.name.replace(/\\/g, '/').split('/').pop().toLowerCase();
-    if (base === 'manifest.json') continue;
-    try {
-      const parsed = JSON.parse(entry.text);
-      const found = [];
-      collectBackupConversations(parsed, found);
-      if (!found.length) invalidEntries += 1;
-      rawConversations.push(...found);
-    } catch {
-      invalidEntries += 1;
-    }
-  }
-
-  const imported = [];
-  const seen = new Set();
-  for (const raw of rawConversations) {
-    const conv = normalizeConversation(raw);
-    if (!conv || seen.has(conv.id)) {
-      invalidEntries += 1;
-      continue;
-    }
-    seen.add(conv.id);
-    imported.push(conv);
-  }
-
-  if (!imported.length) {
-    toast('ZIP 里没有找到可导入的对话', 'error');
-    return;
-  }
-
-  const byId = new Map(state.conversations.map((conv) => [conv.id, conv]));
-  const next = state.conversations.slice();
   let added = 0;
   let updated = 0;
   let skipped = 0;
   let limitSkipped = 0;
+  let failed = 0;
+  const byId = new Map(state.conversations.map((conv) => [conv.id, conv]));
+  const canWriteDb = 'indexedDB' in window && !conversationStoreFallback;
+  const beforeConversations = state.conversations.slice();
+  const beforeActive = state.activeId;
 
-  for (const conv of imported) {
-    const existing = byId.get(conv.id);
-    if (existing) {
-      if (conv.updatedAt > existing.updatedAt) {
-        const index = next.findIndex((item) => item.id === existing.id);
-        if (index >= 0) next[index] = conv;
-        byId.set(conv.id, conv);
-        updated += 1;
-      } else {
-        skipped += 1;
+  try {
+    for await (const entry of readBackupEntries(file, (error, name) => {
+      invalidEntries += 1;
+      console.warn(`ZIP entry skipped: ${name}`, error);
+    })) {
+      const base = entry.name.replace(/\\/g, '/').split('/').pop().toLowerCase();
+      if (base === 'manifest.json') continue;
+
+      let found;
+      try {
+        const parsed = JSON.parse(entry.text);
+        found = [];
+        collectBackupConversations(parsed, found);
+      } catch {
+        invalidEntries += 1;
+        continue;
       }
-      continue;
-    }
+      if (!found.length) {
+        invalidEntries += 1;
+        continue;
+      }
 
-    if (next.length >= MAX_CONVERSATIONS) {
-      limitSkipped += 1;
-      continue;
+      for (const raw of found) {
+        const conv = normalizeConversation(raw);
+        if (!conv) {
+          invalidEntries += 1;
+          continue;
+        }
+
+        const existing = byId.get(conv.id);
+        if (existing) {
+          if (conv.updatedAt <= existing.updatedAt) {
+            skipped += 1;
+            continue;
+          }
+          if (canWriteDb) {
+            try {
+              await putConversationRecord(conv);
+            } catch (error) {
+              failed += 1;
+              console.warn('导入写入失败', error);
+              continue;
+            }
+          }
+          const index = state.conversations.findIndex((item) => item.id === existing.id);
+          if (index >= 0) state.conversations[index] = conv;
+          byId.set(conv.id, conv);
+          conversationRevisions.set(conv.id, conversationRevision(conv));
+          updated += 1;
+          continue;
+        }
+
+        if (state.conversations.length >= MAX_CONVERSATIONS) {
+          limitSkipped += 1;
+          continue;
+        }
+        if (canWriteDb) {
+          try {
+            await putConversationRecord(conv);
+          } catch (error) {
+            failed += 1;
+            console.warn('导入写入失败', error);
+            continue;
+          }
+        }
+        state.conversations.push(conv);
+        byId.set(conv.id, conv);
+        conversationRevisions.set(conv.id, conversationRevision(conv));
+        added += 1;
+      }
     }
-    next.push(conv);
-    byId.set(conv.id, conv);
-    added += 1;
+  } catch (error) {
+    toast(`导入中断：${error.message || '不是有效的 ZIP'}`, 'error');
+    renderSidebar();
+    renderConversation();
+    return;
   }
 
   if (!added && !updated) {
+    if (failed) {
+      toast(`导入失败：${failed} 个对话写入失败，请检查浏览器存储空间`, 'error');
+      return;
+    }
     const detail = skipped ? `，已跳过 ${skipped} 个重复或较旧的对话` : '';
     toast(`没有新的对话可导入${detail}`, 'error');
     return;
   }
 
-  const summary = [
-    `找到 ${imported.length} 个对话：新增 ${added} 个，更新 ${updated} 个。`,
-    skipped ? `跳过 ${skipped} 个重复或较旧的对话。` : '',
-    limitSkipped ? `因最多保留 ${MAX_CONVERSATIONS} 个对话，忽略 ${limitSkipped} 个。` : '',
-    '',
-    '导入会与现有对话合并，不会删除已有记录。继续吗？',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  if (!confirm(summary)) return;
-
-  const previous = state.conversations;
-  const previousActive = state.activeId;
-  next.sort((a, b) => b.updatedAt - a.updatedAt);
-  state.conversations = next;
-  if (!state.activeId || !next.some((conv) => conv.id === state.activeId)) {
-    state.activeId = next[0]?.id || null;
+  state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+  if (!state.activeId || !state.conversations.some((conv) => conv.id === state.activeId)) {
+    state.activeId = state.conversations[0]?.id || null;
   }
-
-  if (!persist()) {
-    state.conversations = previous;
-    state.activeId = previousActive;
+  if (!canWriteDb && !writeStorage(STORAGE.conversations, state.conversations.slice(0, MAX_CONVERSATIONS))) {
+    state.conversations = beforeConversations;
+    state.activeId = beforeActive;
     toast('导入失败：浏览器本地存储空间不足，请先清理旧对话', 'error');
     return;
   }
-
+  saveActiveConversationId();
   renderSidebar();
   renderConversation();
-  const details = [`新增 ${added} 个`, updated ? `更新 ${updated} 个` : '', invalidEntries ? `忽略 ${invalidEntries} 个无效或重复条目` : '']
+
+  const details = [
+    `新增 ${added} 个`,
+    updated ? `更新 ${updated} 个` : '',
+    skipped ? `跳过 ${skipped} 个重复或较旧对话` : '',
+    limitSkipped ? `忽略 ${limitSkipped} 个超出上限对话` : '',
+    invalidEntries ? `忽略 ${invalidEntries} 个无效条目` : '',
+    failed ? `写入失败 ${failed} 个` : '',
+  ]
     .filter(Boolean)
     .join('，');
   toast(`导入完成：${details}`);

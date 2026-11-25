@@ -125,17 +125,6 @@ export function createZip(files) {
   return new Blob([...localChunks, ...centralChunks, end], { type: 'application/zip' });
 }
 
-function findEndOfCentralDirectory(bytes, view) {
-  if (bytes.length < 22) throw new Error('不是有效的 ZIP 文件');
-  const min = Math.max(0, bytes.length - 22 - 0xffff);
-  for (let i = bytes.length - 22; i >= min; i -= 1) {
-    if (view.getUint32(i, true) !== 0x06054b50) continue;
-    const commentLength = view.getUint16(i + 20, true);
-    if (i + 22 + commentLength <= bytes.length) return i;
-  }
-  throw new Error('找不到 ZIP 目录，文件可能不完整');
-}
-
 async function inflateRaw(bytes, maxSize) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('当前浏览器不支持解压 deflate，请用未压缩的 ZIP');
@@ -165,29 +154,58 @@ async function inflateRaw(bytes, maxSize) {
   return output;
 }
 
+function asZipBlob(source) {
+  if (source instanceof Blob) return source;
+  if (source instanceof Uint8Array) return new Blob([source]);
+  if (source instanceof ArrayBuffer) return new Blob([source]);
+  throw new Error('不支持的 ZIP 数据');
+}
+
+async function readBlobBytes(blob, start, end) {
+  if (start < 0 || end < start || end > blob.size) {
+    throw new Error('ZIP 文件数据被截断');
+  }
+  return new Uint8Array(await blob.slice(start, end).arrayBuffer());
+}
+
+async function findEndOfCentralDirectory(blob) {
+  const tailLength = Math.min(blob.size, 22 + 0xffff);
+  const tailStart = blob.size - tailLength;
+  const bytes = await readBlobBytes(blob, tailStart, blob.size);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  for (let i = bytes.length - 22; i >= 0; i -= 1) {
+    if (view.getUint32(i, true) !== 0x06054b50) continue;
+    const commentLength = view.getUint16(i + 20, true);
+    if (i + 22 + commentLength > bytes.length) continue;
+    return {
+      totalEntries: view.getUint16(i + 10, true),
+      centralSize: view.getUint32(i + 12, true),
+      centralOffset: view.getUint32(i + 16, true),
+    };
+  }
+  throw new Error('找不到 ZIP 目录，文件可能不完整');
+}
+
 /**
- * Read a ZIP file into `{ name, data: Uint8Array }` entries.
- * Directories are skipped. Encrypted/ZIP64 archives are rejected.
+ * Stream ZIP entries one at a time.
+ *
+ * `source` may be a Blob/File (recommended: only small slices are read at a
+ * time), or an in-memory Uint8Array/ArrayBuffer. Each yielded entry is
+ * `{ name, data: Uint8Array }`. Set `onEntryError(error, name)` to skip a
+ * damaged entry and continue with the next one.
  */
-export async function readZip(source, options = {}) {
+export async function* readZipEntries(source, options = {}) {
   const {
     maxEntries = 1000,
     maxFileSize = 20 * 1024 * 1024,
     maxTotalSize = 100 * 1024 * 1024,
+    onEntryError = null,
   } = options;
 
-  let buffer;
-  if (source instanceof Blob) buffer = await source.arrayBuffer();
-  else if (source instanceof Uint8Array) buffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
-  else if (source instanceof ArrayBuffer) buffer = source;
-  else throw new Error('不支持的 ZIP 数据');
-
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  const end = findEndOfCentralDirectory(bytes, view);
-  const totalEntries = view.getUint16(end + 10, true);
-  const centralSize = view.getUint32(end + 12, true);
-  const centralOffset = view.getUint32(end + 16, true);
+  const blob = asZipBlob(source);
+  const directory = await findEndOfCentralDirectory(blob);
+  const { totalEntries, centralSize, centralOffset } = directory;
 
   if (
     totalEntries === 0xffff ||
@@ -198,14 +216,16 @@ export async function readZip(source, options = {}) {
   }
   if (!totalEntries) throw new Error('ZIP 是空的');
   if (totalEntries > maxEntries) throw new Error(`ZIP 内文件过多（最多 ${maxEntries} 个）`);
-  if (centralOffset + centralSize > bytes.length) throw new Error('ZIP 目录损坏');
+  if (centralOffset + centralSize > blob.size) throw new Error('ZIP 目录损坏');
+  if (centralSize > 64 * 1024 * 1024) throw new Error('ZIP 目录过大');
 
-  const files = [];
-  let pointer = centralOffset;
+  const central = await readBlobBytes(blob, centralOffset, centralOffset + centralSize);
+  const view = new DataView(central.buffer, central.byteOffset, central.byteLength);
+  let pointer = 0;
   let totalSize = 0;
 
   for (let index = 0; index < totalEntries; index += 1) {
-    if (pointer + 46 > bytes.length || view.getUint32(pointer, true) !== 0x02014b50) {
+    if (pointer + 46 > central.length || view.getUint32(pointer, true) !== 0x02014b50) {
       throw new Error('ZIP 目录项损坏');
     }
 
@@ -219,49 +239,71 @@ export async function readZip(source, options = {}) {
     const commentLength = view.getUint16(pointer + 32, true);
     const localOffset = view.getUint32(pointer + 42, true);
 
-    if (pointer + 46 + nameLength > bytes.length) throw new Error('ZIP 文件名损坏');
-    const name = decoder.decode(bytes.subarray(pointer + 46, pointer + 46 + nameLength));
+    if (pointer + 46 + nameLength > central.length) throw new Error('ZIP 文件名损坏');
+    const name = decoder.decode(central.subarray(pointer + 46, pointer + 46 + nameLength));
     pointer += 46 + nameLength + extraLength + commentLength;
 
     if (name.endsWith('/')) continue;
     if (!name || name.includes('\0')) throw new Error('ZIP 内文件名不合法');
-    if (flags & 0x1) throw new Error('不支持加密的 ZIP');
-    if (
-      compressedSize === 0xffffffff ||
-      uncompressedSize === 0xffffffff ||
-      localOffset === 0xffffffff
-    ) {
-      throw new Error('暂不支持 ZIP64 格式');
+
+    try {
+      if (flags & 0x1) throw new Error('不支持加密的 ZIP');
+      if (
+        compressedSize === 0xffffffff ||
+        uncompressedSize === 0xffffffff ||
+        localOffset === 0xffffffff
+      ) {
+        throw new Error('暂不支持 ZIP64 格式');
+      }
+      if (uncompressedSize > maxFileSize) {
+        throw new Error(`文件 ${name} 太大（单个最多 ${Math.floor(maxFileSize / 1024 / 1024)} MB）`);
+      }
+      if (compressedSize && uncompressedSize / compressedSize > 1000) {
+        throw new Error(`文件 ${name} 压缩比异常，已拒绝`);
+      }
+
+      const local = await readBlobBytes(blob, localOffset, localOffset + 30);
+      const localView = new DataView(local.buffer, local.byteOffset, local.byteLength);
+      if (localView.getUint32(0, true) !== 0x04034b50) {
+        throw new Error('ZIP 本地文件头损坏');
+      }
+      const localNameLength = localView.getUint16(26, true);
+      const localExtraLength = localView.getUint16(28, true);
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+      if (dataStart + compressedSize > blob.size) throw new Error('ZIP 文件数据被截断');
+
+      const raw = await readBlobBytes(blob, dataStart, dataStart + compressedSize);
+      let data;
+      if (method === 0) data = raw.slice();
+      else if (method === 8) data = await inflateRaw(raw, maxFileSize);
+      else throw new Error(`不支持的 ZIP 压缩方式（method ${method}）`);
+
+      if (data.length !== uncompressedSize) throw new Error(`文件 ${name} 解压后大小不符`);
+      if (crc32(data) !== crc) throw new Error(`文件 ${name} 校验失败`);
+
+      totalSize += data.length;
+      if (totalSize > maxTotalSize) {
+        throw new Error(`ZIP 解压后总大小超出限制（最多 ${Math.floor(maxTotalSize / 1024 / 1024)} MB）`);
+      }
+
+      yield { name, data };
+    } catch (error) {
+      if (typeof onEntryError === 'function') {
+        onEntryError(error, name);
+        continue;
+      }
+      throw error;
     }
-    if (uncompressedSize > maxFileSize) {
-      throw new Error(`文件 ${name} 太大（单个最多 20 MB）`);
-    }
-    if (compressedSize && uncompressedSize / compressedSize > 1000) {
-      throw new Error(`文件 ${name} 压缩比异常，已拒绝`);
-    }
-
-    if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) {
-      throw new Error('ZIP 本地文件头损坏');
-    }
-    const localNameLength = view.getUint16(localOffset + 26, true);
-    const localExtraLength = view.getUint16(localOffset + 28, true);
-    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-    if (dataStart + compressedSize > bytes.length) throw new Error('ZIP 文件数据被截断');
-
-    const raw = bytes.subarray(dataStart, dataStart + compressedSize);
-    let data;
-    if (method === 0) data = raw.slice();
-    else if (method === 8) data = await inflateRaw(raw, maxFileSize);
-    else throw new Error(`不支持的 ZIP 压缩方式（method ${method}）`);
-
-    if (data.length !== uncompressedSize) throw new Error(`文件 ${name} 解压后大小不符`);
-    if (crc32(data) !== crc) throw new Error(`文件 ${name} 校验失败`);
-
-    totalSize += data.length;
-    if (totalSize > maxTotalSize) throw new Error('ZIP 解压后总大小超出限制');
-
-    files.push({ name, data });
   }
+}
 
+/**
+ * Read a ZIP file into `{ name, data: Uint8Array }` entries.
+ * Kept for callers that need the whole archive; imports use
+ * `readZipEntries()` so only one entry is held in memory at a time.
+ */
+export async function readZip(source, options = {}) {
+  const files = [];
+  for await (const entry of readZipEntries(source, options)) files.push(entry);
   return files;
 }
