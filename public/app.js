@@ -2217,8 +2217,9 @@ function ensureAssistantElement(conv, message) {
 async function streamAssistant(conv, assistant, options = {}) {
   if (PAGES_MODE && !state.settings.apiKey.trim()) {
     toast('请先在设置中填写 API Key', 'error');
-    return;
+    return false;
   }
+  let succeeded = false;
 
   const controller = new AbortController();
   state.streaming = { convId: conv.id, msgId: assistant.id, controller };
@@ -2381,13 +2382,14 @@ async function streamAssistant(conv, assistant, options = {}) {
     renderConversation({ keepScroll: true });
     renderSidebar();
     scrollToBottom();
+    succeeded = true;
   } catch (error) {
     assistant.streaming = false;
     assistant.searching = false;
     const aborted = error?.name === 'AbortError' || controller.signal.aborted;
     if (aborted) {
       assistant.stopped = true;
-      if (!assistant.content && !assistant.reasoning) {
+      if (!assistant.content && !assistant.reasoning && !options.keepOnFailure) {
         conv.messages = conv.messages.filter((item) => item.id !== assistant.id);
         removeTurnBranch(conv, assistant.id);
       } else {
@@ -2397,7 +2399,7 @@ async function streamAssistant(conv, assistant, options = {}) {
       persist();
       renderConversation({ keepScroll: true });
       renderSidebar();
-      toast('已停止生成');
+      if (!options.suppressErrorToast) toast('已停止生成');
     } else {
       assistant.error = error.message || '未知错误';
       syncTurnBranch(conv, assistant);
@@ -2405,7 +2407,7 @@ async function streamAssistant(conv, assistant, options = {}) {
       persist();
       renderConversation({ keepScroll: true });
       renderSidebar();
-      toast(assistant.error, 'error');
+      if (!options.suppressErrorToast) toast(assistant.error, 'error');
     }
   } finally {
     if (state.streaming?.msgId === assistant.id) state.streaming = null;
@@ -2413,6 +2415,7 @@ async function streamAssistant(conv, assistant, options = {}) {
     updateComposerHint();
     updateContextMeter(true);
   }
+  return succeeded;
 }
 
 function createAssistantMessage() {
@@ -2535,6 +2538,7 @@ async function regenerate(targetId = null) {
   if (userIndex < 0) return;
 
   const userMessage = conv.messages[userIndex];
+  const previousAssistant = conv.messages[targetIndex];
   const turnGroup = ensureTurnGroup(conv, userMessage.id);
   const currentBranch = activeTurnBranch(conv, userMessage.id);
   const questionId = currentBranch?.questionId || questionKey(userMessage.content);
@@ -2546,7 +2550,7 @@ async function regenerate(targetId = null) {
     return;
   }
 
-  saveTurnBranch(conv, userIndex);
+  const previousBranch = saveTurnBranch(conv, userIndex);
   const assistant = createAssistantMessage();
   conv.messages[targetIndex] = assistant;
   createTurnBranch(
@@ -2563,8 +2567,34 @@ async function regenerate(targetId = null) {
   persist();
   renderSidebar();
   renderConversation({ keepScroll: true });
-  toast('旧回答已保留为版本，之后的对话保持不变');
-  await streamAssistant(conv, assistant, { historyEndId: userMessage.id });
+  const succeeded = await streamAssistant(conv, assistant, {
+    historyEndId: userMessage.id,
+    keepOnFailure: true,
+    suppressErrorToast: true,
+  });
+  if (succeeded) {
+    toast('旧回答已保留为版本，之后的对话保持不变');
+    return;
+  }
+
+  const replacedAt = conv.messages.findIndex((message) => message.id === assistant.id);
+  if (replacedAt >= 0) {
+    conv.messages[replacedAt] = previousAssistant;
+  } else {
+    conv.messages.splice(targetIndex, 0, previousAssistant);
+  }
+  removeTurnBranch(conv, assistant.id);
+  const group = ensureTurnGroup(conv, userMessage.id);
+  if (previousBranch) {
+    group.activeId = previousBranch.id;
+    group.activeByQuestion[previousBranch.questionId] = previousBranch.id;
+  }
+  conv.updatedAt = Date.now();
+  persist();
+  renderSidebar();
+  renderConversation({ keepScroll: true });
+  const reason = assistant.error || (assistant.stopped ? '生成已停止' : '生成失败');
+  toast(`已恢复撤回前的回答（${reason}）`, 'error');
 }
 
 /* ============================================================
