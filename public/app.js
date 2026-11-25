@@ -2161,7 +2161,7 @@ function updateContextMeter(force = false) {
    Streaming
    ============================================================ */
 
-function historyForApi(conv, excludeId) {
+function historyForApi(conv, excludeId, cutoffId = null) {
   const messages = [];
   if (state.settings.systemPrompt.trim()) {
     messages.push({ role: 'system', content: state.settings.systemPrompt.trim() });
@@ -2170,6 +2170,7 @@ function historyForApi(conv, excludeId) {
     if (message.id === excludeId || message.error) continue;
     if (!message.content.trim()) continue;
     messages.push({ role: message.role, content: message.content });
+    if (cutoffId && message.id === cutoffId) break;
   }
   return messages;
 }
@@ -2213,7 +2214,7 @@ function ensureAssistantElement(conv, message) {
   return article;
 }
 
-async function streamAssistant(conv, assistant) {
+async function streamAssistant(conv, assistant, options = {}) {
   if (PAGES_MODE && !state.settings.apiKey.trim()) {
     toast('请先在设置中填写 API Key', 'error');
     return;
@@ -2238,7 +2239,7 @@ async function streamAssistant(conv, assistant) {
   }
   const body = {
     model: webSearch ? 'deepseek-flash' : assistant.model,
-    messages: historyForApi(conv, assistant.id),
+    messages: historyForApi(conv, assistant.id, options.historyEndId),
     temperature: state.settings.temperature,
     reasoning_effort: deepThink ? 'high' : 'none',
   };
@@ -2521,8 +2522,10 @@ async function regenerate(targetId = null) {
     }
   }
 
+  if (targetIndex < 0 || conv.messages[targetIndex]?.role !== 'assistant') return;
+
   let userIndex = -1;
-  const start = targetIndex >= 0 ? targetIndex - 1 : conv.messages.length - 1;
+  const start = targetIndex - 1;
   for (let i = start; i >= 0; i -= 1) {
     if (conv.messages[i].role === 'user') {
       userIndex = i;
@@ -2544,9 +2547,8 @@ async function regenerate(targetId = null) {
   }
 
   saveTurnBranch(conv, userIndex);
-  conv.messages = conv.messages.slice(0, userIndex + 1);
   const assistant = createAssistantMessage();
-  conv.messages.push(assistant);
+  conv.messages[targetIndex] = assistant;
   createTurnBranch(
     conv,
     userIndex,
@@ -2561,8 +2563,8 @@ async function regenerate(targetId = null) {
   persist();
   renderSidebar();
   renderConversation({ keepScroll: true });
-  toast('旧回答已保留为版本，可在回答栏切换');
-  await streamAssistant(conv, assistant);
+  toast('旧回答已保留为版本，之后的对话保持不变');
+  await streamAssistant(conv, assistant, { historyEndId: userMessage.id });
 }
 
 /* ============================================================
