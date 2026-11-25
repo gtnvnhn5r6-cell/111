@@ -199,6 +199,14 @@ async function handleChat(req, res) {
     payload.reasoning_effort = effort;
   }
 
+  if (Array.isArray(body.tools)) {
+    const tools = body.tools
+      .filter((tool) => tool && tool.type === 'deepseek_web_search')
+      .slice(0, 1)
+      .map(() => ({ type: 'deepseek_web_search' }));
+    if (tools.length) payload.tools = tools;
+  }
+
   if (!['high', 'xhigh', 'ultra', 'max'].includes(effort)) {
     const temperature = Number(body.temperature);
     if (Number.isFinite(temperature)) {

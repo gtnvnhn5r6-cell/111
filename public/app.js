@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   baseUrl: '',
   model: 'deepseek-flash',
   deepThink: false,
+  webSearch: false,
   temperature: 1,
   systemPrompt: '',
 };
@@ -109,13 +110,33 @@ function writeStorage(key, value) {
 
 function loadSettings() {
   const saved = readStorage(STORAGE.settings, {});
+  const model = normalizeModel(saved?.model);
   return {
     ...DEFAULT_SETTINGS,
     ...(saved && typeof saved === 'object' ? saved : {}),
     temperature: Number.isFinite(Number(saved?.temperature)) ? Number(saved.temperature) : 1,
-    model: normalizeModel(saved?.model),
+    model,
     deepThink: Boolean(saved?.deepThink ?? saved?.model === 'deepseek-reasoner'),
+    webSearch: model === 'deepseek-flash' && Boolean(saved?.webSearch),
   };
+}
+
+function normalizeSource(raw) {
+  const citation = raw?.url_citation || raw;
+  const url = safeUrl(citation?.url || '');
+  if (!url) return null;
+  const title = String(citation?.title || url).replace(/\s+/g, ' ').trim().slice(0, 160);
+  return { url, title: title || url };
+}
+
+function normalizeSources(value) {
+  const output = [];
+  for (const raw of Array.isArray(value) ? value : []) {
+    const source = normalizeSource(raw);
+    if (source && !output.some((item) => item.url === source.url)) output.push(source);
+    if (output.length >= 8) break;
+  }
+  return output;
 }
 
 function normalizeMessage(message) {
@@ -126,6 +147,8 @@ function normalizeMessage(message) {
     reasoning: String(message.reasoning || ''),
     model: normalizeModel(message.model),
     deepThink: Boolean(message.deepThink ?? message.model === 'deepseek-reasoner'),
+    webSearch: Boolean(message.webSearch),
+    sources: normalizeSources(message.sources),
     ts: Number(message.ts) || Date.now(),
     error: message.error ? String(message.error) : '',
     stopped: Boolean(message.stopped),
@@ -387,6 +410,7 @@ const dom = {
   contextPercent: $('#contextPercent'),
   sendBtn: $('#sendBtn'),
   thinkToggle: $('#thinkToggle'),
+  searchToggle: $('#searchToggle'),
   settingsModal: $('#settingsModal'),
   apiKeyInput: $('#apiKeyInput'),
   toggleKey: $('#toggleKey'),
@@ -800,6 +824,10 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
     reasoning.dataset.userToggled = 'true';
   });
 
+  const searchTrace = document.createElement('div');
+  searchTrace.className = 'search-trace';
+  searchTrace.hidden = true;
+
   const content = document.createElement('div');
   content.className = 'assistant-content markdown';
 
@@ -815,7 +843,7 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
   actions.className = 'msg-actions';
   actions.innerHTML = renderActions(message, isLastAssistant);
 
-  body.append(reasoning, content, cursor, error, actions);
+  body.append(reasoning, searchTrace, content, cursor, error, actions);
 
   article.innerHTML = `<div class="msg-avatar">${icon('i-whale')}</div>`;
   article.appendChild(body);
@@ -829,6 +857,7 @@ function paintAssistant(article, message, isLastAssistant) {
   const reasoning = $('.reasoning', article);
   const label = $('.reasoning-label', article);
   const reasoningBody = $('.reasoning-body', article);
+  const searchTrace = $('.search-trace', article);
   const content = $('.assistant-content', article);
   const cursor = $('.typing-cursor', article);
   const error = $('.error-card', article);
@@ -844,6 +873,24 @@ function paintAssistant(article, message, isLastAssistant) {
       reasoning.open = false;
     } else if (message.streaming && !message.content) {
       reasoning.open = true;
+    }
+  }
+
+  const sources = Array.isArray(message.sources) ? message.sources : [];
+  const showSearch = Boolean(message.webSearch) && (Boolean(message.searching) || sources.length > 0);
+  searchTrace.hidden = !showSearch;
+  if (showSearch) {
+    if (message.searching) {
+      searchTrace.innerHTML = `<span class="search-spinner"></span><span>正在联网搜索…</span>`;
+    } else {
+      searchTrace.innerHTML = `<span class="search-source-label">来源</span><div class="search-source-list">${sources
+        .map(
+          (source) =>
+            `<a class="search-source" href="${escapeHtml(safeUrl(source.url))}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(
+              source.title,
+            )}">${escapeHtml(source.title)}</a>`,
+        )
+        .join('')}</div>`;
     }
   }
 
@@ -1156,7 +1203,7 @@ function renderBranchList(conv, turnId) {
   const current = activeTurnBranch(conv, turnId);
   const questionId = current?.questionId;
   const branches = questionId
-    ? (group?.branches || []).filter((branch) => branch.questionId === questionId && branch.kind === 'regen')
+    ? (group?.branches || []).filter((branch) => branch.questionId === questionId && branch.kind !== 'edit')
     : [];
   dom.tocBranches.hidden = branches.length === 0;
   if (!branches.length) {
@@ -1417,7 +1464,12 @@ function closeSidebar() {
    ============================================================ */
 
 function setModel(model) {
-  state.settings.model = normalizeModel(model);
+  const next = normalizeModel(model);
+  if (next !== 'deepseek-flash' && state.settings.webSearch) {
+    state.settings.webSearch = false;
+    toast('DeepSeek-V4-Pro 暂不支持联网搜索，已关闭');
+  }
+  state.settings.model = next;
   saveSettings();
   updateModelUI();
   updateContextMeter(true);
@@ -1430,6 +1482,10 @@ function updateModelUI() {
   dom.thinkToggle.title = state.settings.deepThink
     ? '已开启深度思考：使用更强的推理力度'
     : '开启深度思考：模型会先推理再回答';
+  dom.searchToggle.setAttribute('aria-pressed', String(Boolean(state.settings.webSearch)));
+  dom.searchToggle.title = state.settings.webSearch
+    ? '已开启联网搜索：模型会按需搜索网页并附来源'
+    : '开启联网搜索：需要 DeepSeek-V4.1-Flash';
   $$('.model-option', dom.modelMenu).forEach((option) => {
     option.classList.toggle('selected', option.dataset.model === model);
   });
@@ -1445,6 +1501,27 @@ function toggleDeepThink() {
   saveSettings();
   updateModelUI();
   toast(state.settings.deepThink ? '已开启深度思考' : '已关闭深度思考');
+}
+
+function toggleWebSearch() {
+  if (state.streaming) {
+    toast('请等待当前回答完成后再切换', 'error');
+    return;
+  }
+  const next = !state.settings.webSearch;
+  let switchedModel = false;
+  if (next && normalizeModel(state.settings.model) !== 'deepseek-flash') {
+    state.settings.model = 'deepseek-flash';
+    switchedModel = true;
+  }
+  state.settings.webSearch = next;
+  saveSettings();
+  updateModelUI();
+  if (switchedModel) {
+    toast('联网搜索需要 DeepSeek-V4.1-Flash，已切换并开启');
+  } else {
+    toast(next ? '已开启联网搜索' : '已关闭联网搜索');
+  }
 }
 
 function toggleModelMenu(force) {
@@ -1640,12 +1717,18 @@ async function streamAssistant(conv, assistant) {
   if (!PAGES_MODE && state.settings.baseUrl.trim()) headers['x-api-base'] = state.settings.baseUrl.trim();
 
   const deepThink = Boolean(assistant.deepThink);
+  const webSearch = Boolean(assistant.webSearch);
+  if (webSearch) {
+    assistant.searching = true;
+    assistant.sources = Array.isArray(assistant.sources) ? assistant.sources : [];
+  }
   const body = {
-    model: assistant.model,
+    model: webSearch ? 'deepseek-flash' : assistant.model,
     messages: historyForApi(conv, assistant.id),
     temperature: state.settings.temperature,
     reasoning_effort: deepThink ? 'high' : 'none',
   };
+  if (webSearch) body.tools = [{ type: 'deepseek_web_search' }];
   if (PAGES_MODE) {
     body.stream = true;
     body.stream_options = { include_usage: true };
@@ -1703,6 +1786,20 @@ async function streamAssistant(conv, assistant) {
       }
 
       const choice = payload?.choices?.[0];
+      const toolEvent = choice?.server_tool_event;
+      if (toolEvent) {
+        if (toolEvent.type === 'call_started') {
+          assistant.searching = true;
+        } else if (toolEvent.type === 'call_completed') {
+          const call = toolEvent.call || {};
+          const found = Array.isArray(call.sources) ? [...call.sources] : [];
+          if (call.page) found.push(call.page);
+          addAssistantSources(assistant, found);
+          assistant.searching = false;
+        }
+        queuePaint(conv.id, assistant.id);
+      }
+
       if (choice?.delta) {
         if (choice.delta.reasoning_content && deepThink) {
           assistant.reasoning += choice.delta.reasoning_content;
@@ -1710,6 +1807,19 @@ async function streamAssistant(conv, assistant) {
         if (choice.delta.content) {
           if (!firstContentAt) firstContentAt = Date.now();
           assistant.content += choice.delta.content;
+          assistant.searching = false;
+        }
+        const annotations = choice.delta.annotations || choice.annotations;
+        if (Array.isArray(annotations)) addAssistantSources(assistant, annotations);
+        if (Array.isArray(choice.delta.server_tool_calls)) {
+          const found = [];
+          for (const step of choice.delta.server_tool_calls) {
+            for (const call of step?.calls || []) {
+              if (Array.isArray(call.sources)) found.push(...call.sources);
+              if (call.page) found.push(call.page);
+            }
+          }
+          addAssistantSources(assistant, found);
         }
         if (choice.finish_reason) finished = true;
         queuePaint(conv.id, assistant.id);
@@ -1747,6 +1857,7 @@ async function streamAssistant(conv, assistant) {
     }
 
     assistant.streaming = false;
+    assistant.searching = false;
     assistant.thinkingMs = assistant.thinkingMs || (firstContentAt ? firstContentAt - assistant.startedAt : Date.now() - assistant.startedAt);
     assistant.updatedAt = Date.now();
     syncTurnBranch(conv, assistant);
@@ -1757,6 +1868,7 @@ async function streamAssistant(conv, assistant) {
     scrollToBottom();
   } catch (error) {
     assistant.streaming = false;
+    assistant.searching = false;
     const aborted = error?.name === 'AbortError' || controller.signal.aborted;
     if (aborted) {
       assistant.stopped = true;
@@ -1789,6 +1901,7 @@ async function streamAssistant(conv, assistant) {
 }
 
 function createAssistantMessage() {
+  const webSearch = Boolean(state.settings.webSearch);
   return {
     id: uid(),
     role: 'assistant',
@@ -1796,10 +1909,28 @@ function createAssistantMessage() {
     reasoning: '',
     model: state.settings.model,
     deepThink: Boolean(state.settings.deepThink),
+    webSearch,
+    searching: webSearch,
+    sources: [],
     ts: Date.now(),
     streaming: true,
     startedAt: Date.now(),
   };
+}
+
+function addAssistantSources(assistant, items) {
+  if (!assistant || !Array.isArray(items) || !items.length) return false;
+  const sources = Array.isArray(assistant.sources) ? assistant.sources : [];
+  let changed = false;
+  for (const item of items) {
+    const source = normalizeSource(item);
+    if (!source || sources.some((existing) => existing.url === source.url)) continue;
+    sources.push(source);
+    changed = true;
+    if (sources.length >= 8) break;
+  }
+  assistant.sources = sources.slice(0, 8);
+  return changed;
 }
 
 async function sendMessage(rawText) {
@@ -2033,6 +2164,7 @@ function saveSettingsFromModal() {
   state.settings.apiKey = dom.apiKeyInput.value.trim();
   state.settings.baseUrl = base;
   state.settings.model = normalizeModel(dom.modelSelect.value);
+  if (state.settings.model !== 'deepseek-flash') state.settings.webSearch = false;
   state.settings.temperature = Number(dom.tempInput.value);
   state.settings.systemPrompt = dom.systemPromptInput.value.trim();
 
@@ -2643,6 +2775,7 @@ function wireEvents() {
   });
 
   dom.thinkToggle.addEventListener('click', toggleDeepThink);
+  dom.searchToggle.addEventListener('click', toggleWebSearch);
 
   dom.input.addEventListener('input', autosizeInput);
   dom.input.addEventListener('compositionstart', () => {

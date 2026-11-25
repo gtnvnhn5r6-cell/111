@@ -1385,6 +1385,78 @@ html[data-theme="dark"] .orb-ring {
   height: 10px;
 }
 
+/* Web search trace */
+.search-trace {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.search-spinner {
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: searchSpin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.search-source-label {
+  color: var(--text-3);
+  flex: 0 0 auto;
+  padding-top: 1px;
+}
+
+.search-source-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 16px;
+  min-width: 0;
+  max-height: 100px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.search-source {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.search-source::before {
+  content: "· ";
+  color: var(--text-3);
+}
+
+@media (max-width: 640px) {
+  .search-source-list {
+    grid-template-columns: 1fr;
+    max-height: 112px;
+  }
+}
+
+.search-source:hover {
+  text-decoration: underline;
+}
+
+@keyframes searchSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Turn versions */
 .turn-nav {
   display: flex;
@@ -1812,6 +1884,13 @@ html[data-theme="dark"] .composer {
 
 html[data-theme="dark"] .toggle-chip[aria-pressed="true"] {
   color: #b69cff;
+}
+
+.search-chip[aria-pressed="true"],
+html[data-theme="dark"] .search-chip[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .composer-right {
