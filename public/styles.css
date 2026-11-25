@@ -1541,8 +1541,81 @@ html[data-theme="dark"] .orb-ring {
   margin: 0 1px 4px auto;
 }
 
+.turn-nav-answer {
+  margin: 4px 0 0 1px;
+}
+
 .turn-nav-question .turn-count {
   min-width: 26px;
+}
+
+.toc-clear-branches {
+  flex: none;
+  margin: 8px 10px 2px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.toc-clear-branches:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.branch-clear-card {
+  width: 420px;
+}
+
+.branch-clear-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.branch-clear-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.branch-clear-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.branch-clear-option input {
+  accent-color: var(--accent);
+}
+
+.danger-btn {
+  height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.danger-btn:hover {
+  background: #d93d42;
+}
+
+@media (max-width: 520px) {
+  .branch-clear-card {
+    width: calc(100vw - 24px);
+  }
 }
 
 /* Message actions */

@@ -401,6 +401,11 @@ function normalizeTurnBranches(raw) {
         if (user.role !== 'user' || assistant.role !== 'assistant') return null;
         if (!assistant.content && !assistant.reasoning && !assistant.error) return null;
         const questionId = String(branch.questionId || questionKey(user.content));
+        const tail = Array.isArray(branch.tail)
+          ? branch.tail
+              .filter((message) => message && ['user', 'assistant'].includes(message.role))
+              .map(normalizeMessage)
+          : undefined;
         return {
           id: String(branch.id || uid()),
           label: String(branch.label || '回答版本').slice(0, 80) || '回答版本',
@@ -409,6 +414,7 @@ function normalizeTurnBranches(raw) {
           createdAt: Number(branch.createdAt) || Date.now(),
           user,
           assistant,
+          ...(tail ? { tail } : {}),
         };
       })
       .filter(Boolean)
@@ -530,7 +536,7 @@ function normalizeConversation(conv) {
       group.activeId = group.branches[group.branches.length - 1]?.id || '';
     }
   }
-  return {
+  const normalized = {
     id: String(conv.id || uid()),
     title: String(conv.title || '新对话').slice(0, 200) || '新对话',
     createdAt: Number(conv.createdAt) || Date.now(),
@@ -540,6 +546,8 @@ function normalizeConversation(conv) {
     turnBranches,
     currentBranchLabel: String(conv.currentBranchLabel || '主分支').slice(0, 80) || '主分支',
   };
+  syncActiveBranchTails(normalized);
+  return normalized;
 }
 
 function loadConversations() {
@@ -606,6 +614,12 @@ const dom = {
   tocBranches: $('#tocBranches'),
   tocBranchList: $('#tocBranchList'),
   tocBranchCount: $('#tocBranchCount'),
+  clearBranchesBtn: $('#clearBranchesBtn'),
+  branchClearModal: $('#branchClearModal'),
+  branchClearSubtitle: $('#branchClearSubtitle'),
+  branchClearStats: $('#branchClearStats'),
+  branchClearOptions: $('#branchClearOptions'),
+  branchClearConfirm: $('#branchClearConfirm'),
   zipInput: $('#zipInput'),
   exportZipBtn: $('#exportZipBtn'),
   importZipBtn: $('#importZipBtn'),
@@ -1036,9 +1050,7 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
   const body = document.createElement('div');
   body.className = 'msg-body';
 
-  const turnNav = document.createElement('div');
-  turnNav.innerHTML = turnId ? turnNavHtml(activeConversation(), turnId, 'answer', message.id) : '';
-  if (turnNav.firstElementChild) body.appendChild(turnNav.firstElementChild);
+  const answerNavHtml = turnId ? turnNavHtml(activeConversation(), turnId, 'answer', message.id) : '';
 
   const reasoning = document.createElement('details');
   reasoning.className = 'reasoning';
@@ -1071,6 +1083,12 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
   actions.innerHTML = renderActions(message, isLastAssistant);
 
   body.append(reasoning, searchTrace, content, cursor, error, actions);
+
+  if (answerNavHtml) {
+    const answerNav = document.createElement('div');
+    answerNav.innerHTML = answerNavHtml;
+    if (answerNav.firstElementChild) body.appendChild(answerNav.firstElementChild);
+  }
 
   article.innerHTML = `<div class="msg-avatar">${icon('i-whale')}</div>`;
   article.appendChild(body);
@@ -1203,6 +1221,21 @@ function activeTurnBranch(conv, turnId) {
   return group.branches.find((branch) => branch.id === group.activeId) || group.branches[group.branches.length - 1];
 }
 
+function syncActiveBranchTails(conv) {
+  if (!conv?.turnBranches) return;
+  for (const [turnId, group] of Object.entries(conv.turnBranches)) {
+    const userIndex = userIndexById(conv, turnId);
+    if (userIndex < 0) continue;
+    const active = group.branches?.find((branch) => branch.id === group.activeId);
+    if (!active) continue;
+    const activeUser = conv.messages[userIndex];
+    const activeAssistant = conv.messages[userIndex + 1];
+    if (activeUser?.role === 'user') active.user = cloneMessage(activeUser);
+    if (activeAssistant?.role === 'assistant') active.assistant = cloneMessage(activeAssistant);
+    active.tail = cloneMessages(conv.messages.slice(userIndex + 2));
+  }
+}
+
 function questionGroups(conv, turnId) {
   const group = turnId ? conv?.turnBranches?.[turnId] : null;
   const output = [];
@@ -1238,9 +1271,11 @@ function saveTurnBranch(conv, userIndex, label = '') {
   let branch =
     group.branches.find((item) => item.assistant.id === pair.assistant.id) ||
     group.branches.find((item) => item.id === group.activeId);
+  const tail = cloneMessages(conv.messages.slice(userIndex + 2));
   if (branch) {
     branch.user = cloneMessage(pair.user);
     branch.assistant = cloneMessage(pair.assistant);
+    branch.tail = tail;
     if (!branch.questionId) branch.questionId = questionKey(pair.user.content);
     if (!['base', 'edit', 'regen'].includes(branch.kind)) branch.kind = 'base';
   } else {
@@ -1252,6 +1287,7 @@ function saveTurnBranch(conv, userIndex, label = '') {
       createdAt: Date.now(),
       user: cloneMessage(pair.user),
       assistant: cloneMessage(pair.assistant),
+      tail,
     };
     group.branches.push(branch);
   }
@@ -1272,6 +1308,7 @@ function createTurnBranch(conv, userIndex, assistant, kind, label, questionId = 
     createdAt: Date.now(),
     user: cloneMessage(user),
     assistant: cloneMessage(assistant),
+    tail: [],
   };
   group.branches.push(branch);
   group.activeId = branch.id;
@@ -1344,11 +1381,19 @@ function answerInfo(conv, turnId, assistantId) {
 function applyTurnBranch(conv, userIndex, group, branch) {
   const user = cloneMessage(branch.user);
   const assistant = cloneMessage(branch.assistant);
+  const currentTail = cloneMessages(conv.messages.slice(userIndex + 2));
+  const currentBranch = group.branches.find((item) => item.id === group.activeId);
+  if (currentBranch && currentBranch.id !== branch.id) {
+    currentBranch.user = cloneMessage(conv.messages[userIndex]);
+    currentBranch.assistant = cloneMessage(conv.messages[userIndex + 1]);
+    currentBranch.tail = currentTail;
+  }
+  const nextTail = Array.isArray(branch.tail) ? cloneMessages(branch.tail) : currentTail;
   user.id = conv.messages[userIndex].id;
   group.activeId = branch.id;
   group.activeByQuestion[branch.questionId] = branch.id;
-  conv.messages[userIndex] = user;
-  conv.messages[userIndex + 1] = assistant;
+  conv.messages = conv.messages.slice(0, userIndex);
+  conv.messages.push(user, assistant, ...nextTail);
   conv.updatedAt = Date.now();
   state.tocTurnId = user.id;
 
@@ -1450,6 +1495,117 @@ function renderBranchList(conv, turnId) {
         )}</span><span class="toc-branch-meta">${index + 1}/${branches.length}</span></button>`,
     )
     .join('');
+}
+
+function branchCounts(conv) {
+  const counts = { edit: 0, regen: 0, total: 0 };
+  for (const group of Object.values(conv?.turnBranches || {})) {
+    for (const branch of group.branches || []) {
+      if (branch.kind === 'edit') counts.edit += 1;
+      if (branch.kind === 'regen') counts.regen += 1;
+      counts.total += 1;
+    }
+  }
+  return counts;
+}
+
+function openBranchClearDialog() {
+  if (state.streaming) {
+    toast('请先停止当前生成，再清理分支', 'error');
+    return;
+  }
+  const conv = activeConversation();
+  if (!conv) return;
+  const counts = branchCounts(conv);
+  if (!counts.total) {
+    toast('当前对话没有可清除的分支');
+    return;
+  }
+  dom.branchClearSubtitle.textContent = `「${conv.title}」的历史版本`;
+  dom.branchClearStats.textContent = `修改分支 ${counts.edit} 个 · 重新生成分支 ${counts.regen} 个`;
+  const radios = [...dom.branchClearOptions.querySelectorAll('input[name="branchClearKind"]')];
+  const availability = { edit: counts.edit > 0, regen: counts.regen > 0, all: counts.total > 0 };
+  radios.forEach((radio) => {
+    radio.disabled = !availability[radio.value];
+    radio.checked = false;
+  });
+  const firstAvailable = radios.find((radio) => !radio.disabled);
+  if (firstAvailable) firstAvailable.checked = true;
+  dom.branchClearConfirm.disabled = !firstAvailable;
+  dom.branchClearModal.hidden = false;
+  setTimeout(() => firstAvailable?.focus(), 30);
+}
+
+function closeBranchClearDialog() {
+  dom.branchClearModal.hidden = true;
+  dom.clearBranchesBtn.focus();
+}
+
+function removeConversationBranches(kind) {
+  const conv = activeConversation();
+  if (!conv || !conv.turnBranches) return;
+  const before = branchCounts(conv).total;
+  if (kind === 'all') {
+    conv.turnBranches = {};
+  } else {
+    for (const [turnId, group] of Object.entries(conv.turnBranches)) {
+      const active = group.branches.find((branch) => branch.id === group.activeId);
+      if (active?.kind === kind) {
+        const userIndex = userIndexById(conv, turnId);
+        const tail =
+          Array.isArray(active.tail) && userIndex >= 0
+            ? cloneMessages(active.tail)
+            : userIndex >= 0
+              ? cloneMessages(conv.messages.slice(userIndex + 2))
+              : [];
+        const preserved = {
+          id: uid(),
+          label: '当前回答',
+          kind: 'base',
+          questionId: active.questionId,
+          createdAt: Date.now(),
+          user: cloneMessage(active.user),
+          assistant: cloneMessage(active.assistant),
+          tail,
+        };
+        group.branches.push(preserved);
+        group.activeId = preserved.id;
+        group.activeByQuestion[preserved.questionId] = preserved.id;
+      }
+      group.branches = group.branches.filter((branch) => branch.kind !== kind);
+      if (!group.branches.length) {
+        delete conv.turnBranches[turnId];
+        continue;
+      }
+      for (const [questionId, branchId] of Object.entries(group.activeByQuestion || {})) {
+        if (!group.branches.some((branch) => branch.id === branchId && branch.questionId === questionId)) {
+          delete group.activeByQuestion[questionId];
+        }
+      }
+      if (!group.branches.some((branch) => branch.id === group.activeId)) {
+        group.activeId = group.branches[group.branches.length - 1].id;
+      }
+      for (const branch of group.branches) {
+        if (!group.activeByQuestion[branch.questionId]) group.activeByQuestion[branch.questionId] = branch.id;
+      }
+      const current = group.branches.find((branch) => branch.id === group.activeId);
+      if (current) group.activeByQuestion[current.questionId] = group.activeId;
+    }
+  }
+  const removed = before - branchCounts(conv).total;
+  conv.updatedAt = Date.now();
+  persist();
+  renderConversation({ keepScroll: true });
+  renderSidebar();
+  renderToc();
+  closeBranchClearDialog();
+  toast(
+    removed
+      ? kind === 'all'
+        ? `已清除 ${removed} 个历史分支`
+        : `已清除 ${removed} 个${kind === 'edit' ? '修改' : '重新生成'}分支`
+      : '没有可清除的分支',
+  );
 }
 
 function renderToc() {
@@ -1629,7 +1785,6 @@ async function saveEditedMessage(messageId, rawText) {
     'edit',
     editCount ? `修改后 ${editCount + 1}` : '修改后',
   );
-  pruneTurnBranches(conv);
   state.tocTurnId = userMessage.id;
   conv.updatedAt = Date.now();
   persist();
@@ -2185,7 +2340,10 @@ function estimateTextTokens(value) {
   if (!text) return 0;
   const cjk = (text.match(CJK_TOKEN_RE) || []).length;
   const other = text.length - cjk;
-  return Math.ceil(cjk * 1.02 + other / 3.6);
+  // DeepSeek's tokenizer averages roughly 0.7 tokens per CJK character and
+  // four characters per Latin/code token. This is still an estimate, but it
+  // tracks API usage much more closely than character counts.
+  return Math.ceil(cjk * 0.7 + other / 3.8);
 }
 
 function estimateConversationTokens(conv) {
@@ -2215,8 +2373,35 @@ function contextStatsFor(conv) {
     return { used, limit, percent: (used / limit) * 100, exact: true };
   }
 
+  // When the last message is a new user turn, reuse the API's last known
+  // prompt size and estimate only the messages that came after it. This is
+  // much closer to reality than re-estimating the entire conversation.
+  for (let index = conv.messages.length - 1; index >= 0; index -= 1) {
+    const anchor = conv.messages[index];
+    if (
+      anchor.role === 'assistant' &&
+      !anchor.streaming &&
+      !anchor.error &&
+      Number(anchor.tokens?.prompt) > 0
+    ) {
+      let used = Number(anchor.tokens.prompt) + Number(anchor.tokens.completion || 0);
+      for (let cursor = index + 1; cursor < conv.messages.length; cursor += 1) {
+        const message = conv.messages[cursor];
+        if (!message.content || message.error) continue;
+        used += estimateTextTokens(message.content) + 4;
+      }
+      return {
+        used,
+        limit,
+        percent: (used / limit) * 100,
+        exact: false,
+        anchored: true,
+      };
+    }
+  }
+
   const used = estimateConversationTokens(conv);
-  return { used, limit, percent: (used / limit) * 100, exact: false };
+  return { used, limit, percent: (used / limit) * 100, exact: false, anchored: false };
 }
 
 function updateContextMeter(force = false) {
@@ -2241,15 +2426,22 @@ function updateContextMeter(force = false) {
 
   dom.contextMeter.hidden = false;
   dom.contextFill.style.width = `${width}%`;
-  dom.contextUsage.textContent = `${formatContextTokens(info.used)} / ${formatContextTokens(info.limit)}`;
+  dom.contextUsage.textContent = `${info.exact ? '' : '≈'}${formatContextTokens(info.used)} / ${formatContextTokens(
+    info.limit,
+  )}`;
   dom.contextPercent.textContent = percentText;
   dom.contextTrack.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, Math.round(info.percent)))));
   dom.contextMeter.classList.toggle('warn', info.percent >= 75 && info.percent < 90);
   dom.contextMeter.classList.toggle('danger', info.percent >= 90);
-  dom.contextMeter.title = `${info.exact ? 'API 用量' : '估算用量'}：${Math.round(info.used).toLocaleString(
+  const sourceLabel = info.exact
+    ? 'API 用量'
+    : info.anchored
+      ? '估算用量（基于上次 API 用量）'
+      : '估算用量（可能偏高）';
+  dom.contextMeter.title = `${sourceLabel}：${Math.round(info.used).toLocaleString(
     'en-US',
   )} / ${info.limit.toLocaleString('en-US')} tokens${
-    info.exact ? '' : '（发送后按 API usage 校准）'
+    info.exact ? '' : '；发送后按 API usage 校准'
   }`;
 }
 
@@ -2580,6 +2772,7 @@ async function sendMessage(rawText) {
   const assistant = createAssistantMessage();
 
   conv.messages.push(userMessage, assistant);
+  syncActiveBranchTails(conv);
   conv.updatedAt = Date.now();
   if (conv.title === '新对话' || !conv.title) conv.title = titleFrom(text);
   if (conv.messages.filter((m) => m.role === 'user').length === 1) conv.title = titleFrom(text);
@@ -2635,6 +2828,8 @@ async function regenerate(targetId = null) {
 
   const userMessage = conv.messages[userIndex];
   const previousAssistant = conv.messages[targetIndex];
+  const previousTail = cloneMessages(conv.messages.slice(targetIndex + 1));
+  const hadLaterTurns = previousTail.length > 0;
   const turnGroup = ensureTurnGroup(conv, userMessage.id);
   const currentBranch = activeTurnBranch(conv, userMessage.id);
   const questionId = currentBranch?.questionId || questionKey(userMessage.content);
@@ -2647,6 +2842,7 @@ async function regenerate(targetId = null) {
   }
 
   const previousBranch = saveTurnBranch(conv, userIndex);
+  if (hadLaterTurns) conv.messages = conv.messages.slice(0, targetIndex + 1);
   const assistant = createAssistantMessage();
   conv.messages[targetIndex] = assistant;
   createTurnBranch(
@@ -2657,7 +2853,6 @@ async function regenerate(targetId = null) {
     regenCount ? `重新生成 ${regenCount + 1}` : '重新生成',
     questionId,
   );
-  pruneTurnBranches(conv);
   state.tocTurnId = userMessage.id;
   conv.updatedAt = Date.now();
   persist();
@@ -2669,7 +2864,11 @@ async function regenerate(targetId = null) {
     suppressErrorToast: true,
   });
   if (succeeded) {
-    toast('旧回答已保留为版本，之后的对话保持不变');
+    toast(
+      hadLaterTurns
+        ? '已开始新支线，后续轮次已隐藏；可在回答栏切回旧版本'
+        : '旧回答已保留为版本，之后的对话保持不变',
+    );
     return;
   }
 
@@ -2679,6 +2878,7 @@ async function regenerate(targetId = null) {
   } else {
     conv.messages.splice(targetIndex, 0, previousAssistant);
   }
+  if (previousTail.length) conv.messages.splice(targetIndex + 1, 0, ...previousTail);
   removeTurnBranch(conv, assistant.id);
   const group = ensureTurnGroup(conv, userMessage.id);
   if (previousBranch) {
@@ -3474,6 +3674,7 @@ function wireEvents() {
     toggleToc();
   });
   dom.tocClose.addEventListener('click', () => toggleToc(false));
+  dom.clearBranchesBtn.addEventListener('click', openBranchClearDialog);
   dom.tocList.addEventListener('click', (event) => {
     const item = event.target.closest('[data-toc-id]');
     if (!item) return;
@@ -3630,6 +3831,14 @@ function wireEvents() {
     if (action.dataset.action === 'regenerate') regenerate(message.id);
   });
 
+  // Branch cleanup
+  $$('[data-close-branch-clear]').forEach((el) => el.addEventListener('click', closeBranchClearDialog));
+  dom.branchClearConfirm.addEventListener('click', () => {
+    const selected = dom.branchClearOptions.querySelector('input[name="branchClearKind"]:checked');
+    if (!selected || selected.disabled) return;
+    removeConversationBranches(selected.value);
+  });
+
   // Copy conversation
   $$('[data-close-copy]').forEach((el) => el.addEventListener('click', closeCopyDialog));
   dom.copyAllBtn.addEventListener('click', () => {
@@ -3668,6 +3877,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (!dom.branchClearModal.hidden) closeBranchClearDialog();
       if (!dom.copyModal.hidden) closeCopyDialog();
       if (!dom.settingsModal.hidden) closeSettings();
       if (!dom.modelMenu.hidden) toggleModelMenu(false);

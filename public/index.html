@@ -138,6 +138,9 @@
                   </div>
                   <div id="tocBranchList" class="toc-branch-list"></div>
                 </div>
+                <button id="clearBranchesBtn" class="toc-clear-branches" type="button">
+                  清除分支…
+                </button>
               </section>
             </div>
             <button id="themeBtn" class="icon-btn" type="button" aria-label="切换主题" title="切换主题">
@@ -415,6 +418,43 @@
 
           <p class="field-hint copy-hint">一轮 = 一条提问及其回答；m / n 按当前对话从上到下计数。复制只会生成新对话，不会修改原对话；「全部复制」不生成摘要。</p>
         </div>
+      </section>
+    </div>
+
+    <div id="branchClearModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-branch-clear></div>
+      <section class="modal-card branch-clear-card" role="dialog" aria-modal="true" aria-labelledby="branchClearTitle">
+        <header class="modal-head">
+          <div>
+            <h2 id="branchClearTitle">清除分支</h2>
+            <p id="branchClearSubtitle">清理这条对话中的历史版本</p>
+          </div>
+          <button class="icon-btn" type="button" data-close-branch-clear aria-label="关闭清除分支">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <p id="branchClearStats" class="field-hint"></p>
+          <div id="branchClearOptions" class="branch-clear-options">
+            <label class="branch-clear-option">
+              <input type="radio" name="branchClearKind" value="edit" />
+              <span>清除「修改提问」分支</span>
+            </label>
+            <label class="branch-clear-option">
+              <input type="radio" name="branchClearKind" value="regen" />
+              <span>清除「重新生成」分支</span>
+            </label>
+            <label class="branch-clear-option">
+              <input type="radio" name="branchClearKind" value="all" />
+              <span>清除全部历史分支</span>
+            </label>
+          </div>
+          <p class="field-hint">只删除历史版本，不会删除当前对话内容和当前回答。</p>
+        </div>
+        <footer class="modal-foot">
+          <button class="ghost-btn" type="button" data-close-branch-clear>取消</button>
+          <button id="branchClearConfirm" class="danger-btn" type="button">清除</button>
+        </footer>
       </section>
     </div>
 
