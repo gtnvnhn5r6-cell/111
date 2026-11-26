@@ -1629,8 +1629,18 @@ html[data-theme="dark"] .orb-ring {
 }
 
 .msg:hover .msg-actions,
-.msg-actions:focus-within {
+.msg-actions:focus-within,
+.msg.stopped .msg-actions {
   opacity: 1;
+}
+
+.msg-action[data-action="continue"] {
+  color: var(--accent);
+}
+
+.msg-action[data-action="continue"]:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 @media (hover: none) {

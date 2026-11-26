@@ -1020,9 +1020,15 @@ function renderActions(message, isLastAssistant) {
   }
 
   const model = MODEL_META[message.model]?.short || 'AI';
+  const continueButton =
+    isLastAssistant && message.stopped && String(message.content || '').trim()
+      ? `<button class="msg-action" type="button" data-action="continue">${icon(
+          'i-play',
+        )}<span>继续生成</span></button>`
+      : '';
   return `<button class="msg-action" type="button" data-action="copy">${icon(
     'i-copy',
-  )}<span>复制</span></button><button class="msg-action" type="button" data-action="regenerate">${icon(
+  )}<span>复制</span></button>${continueButton}<button class="msg-action" type="button" data-action="regenerate">${icon(
     'i-refresh',
   )}<span>重新生成</span></button><span class="msg-model-tag">${escapeHtml(model)}</span>`;
 }
@@ -1037,6 +1043,7 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
   const article = document.createElement('article');
   article.className = `msg ${message.role}`;
   article.dataset.msgId = message.id;
+  article.classList.toggle('stopped', Boolean(message.stopped));
   if (turnId) article.dataset.turnId = turnId;
 
   if (message.role === 'user') {
@@ -1107,6 +1114,7 @@ function paintAssistant(article, message, isLastAssistant) {
   const cursor = $('.typing-cursor', article);
   const error = $('.error-card', article);
   const actions = $('.msg-actions', article);
+  article.classList.toggle('stopped', Boolean(message.stopped));
 
   const showReasoning = Boolean(message.reasoning) || Boolean(message.streaming && message.deepThink);
   reasoning.hidden = !showReasoning;
@@ -2508,11 +2516,14 @@ async function streamAssistant(conv, assistant, options = {}) {
     return false;
   }
   let succeeded = false;
+  const continuation = Boolean(options.continuation);
 
   const controller = new AbortController();
   state.streaming = { convId: conv.id, msgId: assistant.id, controller };
   assistant.streaming = true;
-  assistant.startedAt = Date.now();
+  assistant.stopped = false;
+  assistant.error = '';
+  if (!continuation) assistant.startedAt = Date.now();
   setStreamingUI(true);
   ensureAssistantElement(conv, assistant);
 
@@ -2522,24 +2533,30 @@ async function streamAssistant(conv, assistant, options = {}) {
 
   const deepThink = Boolean(assistant.deepThink);
   const webSearch = Boolean(assistant.webSearch);
-  if (webSearch) {
+  if (webSearch && !continuation) {
     assistant.searching = true;
     assistant.sources = Array.isArray(assistant.sources) ? assistant.sources : [];
   }
+  const requestMessages = historyForApi(conv, assistant.id, options.historyEndId);
+  if (continuation) {
+    assistant.searching = false;
+    requestMessages.push({ role: 'assistant', content: assistant.content, prefix: true });
+  }
   const body = {
     model: webSearch ? 'deepseek-flash' : assistant.model,
-    messages: historyForApi(conv, assistant.id, options.historyEndId),
+    messages: requestMessages,
     temperature: state.settings.temperature,
-    reasoning_effort: deepThink ? 'high' : 'none',
+    reasoning_effort: continuation ? 'none' : deepThink ? 'high' : 'none',
   };
-  if (webSearch) body.tools = [{ type: 'deepseek_web_search' }];
+  if (webSearch && !continuation) body.tools = [{ type: 'deepseek_web_search' }];
+  if (continuation && !PAGES_MODE) body.beta = true;
   if (PAGES_MODE) {
     body.stream = true;
     body.stream_options = { include_usage: true };
   }
 
   try {
-    const response = await fetch(chatEndpoint(), {
+    const response = await fetch(chatEndpoint(continuation), {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -2662,7 +2679,10 @@ async function streamAssistant(conv, assistant, options = {}) {
 
     assistant.streaming = false;
     assistant.searching = false;
-    assistant.thinkingMs = assistant.thinkingMs || (firstContentAt ? firstContentAt - assistant.startedAt : Date.now() - assistant.startedAt);
+    assistant.stopped = false;
+    if (!continuation) {
+      assistant.thinkingMs = assistant.thinkingMs || (firstContentAt ? firstContentAt - assistant.startedAt : Date.now() - assistant.startedAt);
+    }
     assistant.updatedAt = Date.now();
     syncTurnBranch(conv, assistant);
     conv.updatedAt = Date.now();
@@ -2790,6 +2810,28 @@ async function sendMessage(rawText) {
 
 function stopStreaming() {
   state.streaming?.controller.abort();
+}
+
+async function continueAssistant(messageId) {
+  if (state.streaming) return;
+  const conv = activeConversation();
+  if (!conv || !conv.messages.length) return;
+  const index = conv.messages.findIndex((message) => message.id === messageId);
+  const assistant = conv.messages[index];
+  if (!assistant || assistant.role !== 'assistant') return;
+  if (index !== conv.messages.length - 1) {
+    toast('只能继续最后一条回答', 'error');
+    return;
+  }
+  if (!assistant.stopped || !String(assistant.content || '').trim()) return;
+  if (!hasApiKey()) {
+    toast('请先配置 DeepSeek API Key', 'error');
+    openSettings();
+    return;
+  }
+  assistant.error = '';
+  assistant.stopped = false;
+  await streamAssistant(conv, assistant, { continuation: true, keepOnFailure: true });
 }
 
 async function regenerate(targetId = null) {
@@ -2937,8 +2979,9 @@ function apiBaseForPages(explicitBase) {
   return normalizeBaseUrl(candidate) || PAGES_API_BASE;
 }
 
-function chatEndpoint() {
-  return PAGES_MODE ? `${apiBaseForPages()}/chat/completions` : '/api/chat';
+function chatEndpoint(continuation = false) {
+  if (!PAGES_MODE) return '/api/chat';
+  return `${apiBaseForPages()}${continuation ? '/beta/chat/completions' : '/chat/completions'}`;
 }
 
 function modelsEndpoint(explicitBase) {
@@ -3828,6 +3871,7 @@ function wireEvents() {
 
     if (action.dataset.action === 'copy') copyText(message.content);
     if (action.dataset.action === 'edit') beginEditMessage(article, message);
+    if (action.dataset.action === 'continue') continueAssistant(message.id);
     if (action.dataset.action === 'regenerate') regenerate(message.id);
   });
 

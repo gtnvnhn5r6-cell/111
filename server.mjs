@@ -143,10 +143,15 @@ function sanitizeMessages(input) {
   if (!Array.isArray(input)) return [];
   return input
     .filter((m) => m && typeof m === 'object')
-    .map((m) => ({
-      role: ['system', 'user', 'assistant'].includes(m.role) ? m.role : 'user',
-      content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
-    }))
+    .map((m) => {
+      const role = ['system', 'user', 'assistant'].includes(m.role) ? m.role : 'user';
+      const message = {
+        role,
+        content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
+      };
+      if (role === 'assistant' && m.prefix === true) message.prefix = true;
+      return message;
+    })
     .filter((m) => m.content.length > 0 || m.role === 'assistant')
     .slice(-80);
 }
@@ -221,6 +226,7 @@ async function handleChat(req, res) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('上游响应超时')), 180000);
   const base = requestBase(req);
+  const beta = body.beta === true;
   let closed = false;
   res.on('close', () => {
     closed = true;
@@ -230,7 +236,7 @@ async function handleChat(req, res) {
 
   let upstream;
   try {
-    upstream = await fetch(upstreamUrl(base, '/chat/completions'), {
+    upstream = await fetch(upstreamUrl(base, beta ? '/beta/chat/completions' : '/chat/completions'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
