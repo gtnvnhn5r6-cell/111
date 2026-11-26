@@ -1021,7 +1021,7 @@ function renderActions(message, isLastAssistant) {
 
   const model = MODEL_META[message.model]?.short || 'AI';
   const continueButton =
-    isLastAssistant && message.stopped && String(message.content || '').trim()
+    isLastAssistant && message.stopped
       ? `<button class="msg-action" type="button" data-action="continue">${icon(
           'i-play',
         )}<span>继续生成</span></button>`
@@ -1147,7 +1147,11 @@ function paintAssistant(article, message, isLastAssistant) {
     }
   }
 
-  content.innerHTML = renderMarkdown(message.content);
+  if (!message.streaming && message.stopped && !String(message.content || '').trim()) {
+    content.innerHTML = '<p class="stopped-placeholder">已停止生成，可点击“继续生成”继续</p>';
+  } else {
+    content.innerHTML = renderMarkdown(message.content);
+  }
   cursor.hidden = !message.streaming;
   if (message.streaming && message.content) content.appendChild(cursor);
 
@@ -2697,17 +2701,12 @@ async function streamAssistant(conv, assistant, options = {}) {
     const aborted = error?.name === 'AbortError' || controller.signal.aborted;
     if (aborted) {
       assistant.stopped = true;
-      if (!assistant.content && !assistant.reasoning && !options.keepOnFailure) {
-        conv.messages = conv.messages.filter((item) => item.id !== assistant.id);
-        removeTurnBranch(conv, assistant.id);
-      } else {
-        syncTurnBranch(conv, assistant);
-      }
+      syncTurnBranch(conv, assistant);
       conv.updatedAt = Date.now();
       persist();
       renderConversation({ keepScroll: true });
       renderSidebar();
-      if (!options.suppressErrorToast) toast('已停止生成');
+      if (!options.suppressErrorToast) toast('已停止生成，可点“继续生成”');
     } else {
       assistant.error = error.message || '未知错误';
       syncTurnBranch(conv, assistant);
@@ -2823,7 +2822,7 @@ async function continueAssistant(messageId) {
     toast('只能继续最后一条回答', 'error');
     return;
   }
-  if (!assistant.stopped || !String(assistant.content || '').trim()) return;
+  if (!assistant.stopped) return;
   if (!hasApiKey()) {
     toast('请先配置 DeepSeek API Key', 'error');
     openSettings();

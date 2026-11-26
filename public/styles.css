@@ -1634,6 +1634,12 @@ html[data-theme="dark"] .orb-ring {
   opacity: 1;
 }
 
+.msg.stopped .stopped-placeholder {
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 0;
+}
+
 .msg-action[data-action="continue"] {
   color: var(--accent);
 }
