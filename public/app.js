@@ -40,10 +40,25 @@ const MAX_IMPORT_ENTRIES = 2000;
 const MAX_TURN_EDITS = 10;
 const MAX_TURN_REGENS = 10;
 const MAX_TURN_BRANCHES = 240;
+const MAX_IMAGES = 4;
+const MAX_HISTORY_IMAGES = 8;
+const MAX_IMAGE_DIMENSION = 1600;
+const IMAGE_QUALITY = 0.86;
+const MAX_IMAGE_FILE_BYTES = 24 * 1024 * 1024;
 
 const MODEL_META = {
-  'deepseek-flash': { label: 'DeepSeek-V4.1-Flash', short: 'V4.1-Flash', contextWindow: 1048576 },
-  'deepseek-v4-pro': { label: 'DeepSeek-V4-Pro', short: 'V4-Pro', contextWindow: 1048576 },
+  'deepseek-flash': {
+    label: 'DeepSeek-V4.1-Flash',
+    short: 'V4.1-Flash',
+    contextWindow: 1048576,
+    vision: true,
+  },
+  'deepseek-v4-pro': {
+    label: 'DeepSeek-V4-Pro',
+    short: 'V4-Pro',
+    contextWindow: 1048576,
+    vision: false,
+  },
 };
 
 const DEFAULT_CONTEXT_WINDOW = 1048576;
@@ -352,6 +367,26 @@ function normalizeSources(value) {
   return output;
 }
 
+function normalizeImage(image) {
+  if (!image || typeof image !== 'object') return null;
+  const dataUrl = String(image.dataUrl || '');
+  if (!/^data:image\/(?:jpeg|png|gif|webp);base64,[a-z0-9+/=]+$/i.test(dataUrl)) return null;
+  if (dataUrl.length > 36 * 1024 * 1024) return null;
+  return {
+    id: String(image.id || uid()),
+    name: String(image.name || '图片').slice(0, 120) || '图片',
+    dataUrl,
+    width: Math.max(1, Number(image.width) || 1),
+    height: Math.max(1, Number(image.height) || 1),
+    size: Math.max(0, Number(image.size) || 0),
+  };
+}
+
+function normalizeImages(input) {
+  if (!Array.isArray(input)) return [];
+  return input.map(normalizeImage).filter(Boolean).slice(0, MAX_IMAGES);
+}
+
 function normalizeMessage(message) {
   return {
     id: String(message.id || uid()),
@@ -362,6 +397,7 @@ function normalizeMessage(message) {
     deepThink: Boolean(message.deepThink ?? message.model === 'deepseek-reasoner'),
     webSearch: Boolean(message.webSearch),
     sources: normalizeSources(message.sources),
+    images: normalizeImages(message.images),
     ts: Number(message.ts) || Date.now(),
     error: message.error ? String(message.error) : '',
     stopped: Boolean(message.stopped),
@@ -584,6 +620,7 @@ const state = {
   demo: new URLSearchParams(location.search).has('demo'),
   paintQueued: false,
   contextUpdatedAt: 0,
+  pendingImages: [],
 };
 
 if (!state.conversations.some((conv) => conv.id === state.activeId)) {
@@ -636,6 +673,9 @@ const dom = {
   contextUsage: $('#contextUsage'),
   contextPercent: $('#contextPercent'),
   sendBtn: $('#sendBtn'),
+  imageBtn: $('#imageBtn'),
+  imageInput: $('#imageInput'),
+  imageTray: $('#imageTray'),
   thinkToggle: $('#thinkToggle'),
   searchToggle: $('#searchToggle'),
   settingsModal: $('#settingsModal'),
@@ -1048,9 +1088,24 @@ function createMessageElement(message, isLastAssistant, turnId = null) {
 
   if (message.role === 'user') {
     const questionNav = turnId ? turnNavHtml(activeConversation(), turnId, 'question') : '';
-    article.innerHTML = `<div class="msg-avatar">我</div><div class="msg-body">${questionNav}<div class="user-bubble">${escapeHtml(
-      message.content,
-    )}</div><div class="msg-actions">${renderActions(message, false)}</div></div>`;
+    const images = Array.isArray(message.images) ? message.images : [];
+    const imageHtml = images.length
+      ? `<div class="user-images">${images
+          .map(
+            (image) =>
+              `<img class="user-image" src="${escapeHtml(image.dataUrl)}" alt="${escapeHtml(
+                image.name || '图片',
+              )}" title="${escapeHtml(image.name || '图片')}" />`,
+          )
+          .join('')}</div>`
+      : '';
+    const bubbleHtml = String(message.content || '').trim()
+      ? `<div class="user-bubble">${escapeHtml(message.content)}</div>`
+      : '';
+    article.innerHTML = `<div class="msg-avatar">我</div><div class="msg-body">${questionNav}${imageHtml}${bubbleHtml}<div class="msg-actions">${renderActions(
+      message,
+      false,
+    )}</div></div>`;
     return article;
   }
 
@@ -1809,6 +1864,7 @@ async function saveEditedMessage(messageId, rawText) {
 
 function switchConversation(id) {
   if (state.streaming) stopStreaming();
+  clearPendingImages();
   state.activeId = id;
   persist();
   renderSidebar();
@@ -1831,6 +1887,9 @@ function deleteConversation(id) {
 
 function newChat() {
   if (state.streaming) stopStreaming();
+  clearPendingImages();
+  dom.input.value = '';
+  autosizeInput();
   state.activeId = null;
   persist();
   renderSidebar();
@@ -2246,6 +2305,10 @@ function setModel(model) {
     state.settings.webSearch = false;
     toast('DeepSeek-V4-Pro 暂不支持联网搜索，已关闭');
   }
+  if (next !== 'deepseek-flash' && state.pendingImages.length) {
+    clearPendingImages();
+    toast('DeepSeek-V4-Pro 暂不支持图片，已移除待发送图片');
+  }
   state.settings.model = next;
   saveSettings();
   updateModelUI();
@@ -2263,6 +2326,12 @@ function updateModelUI() {
   dom.searchToggle.title = state.settings.webSearch
     ? '已开启联网搜索：模型会按需搜索网页并附来源'
     : '开启联网搜索：需要 DeepSeek-V4.1-Flash';
+  if (dom.imageBtn) {
+    dom.imageBtn.title =
+      model === 'deepseek-flash'
+        ? '添加图片'
+        : '添加图片（会自动切换到 DeepSeek-V4.1-Flash）';
+  }
   $$('.model-option', dom.modelMenu).forEach((option) => {
     option.classList.toggle('selected', option.dataset.model === model);
   });
@@ -2330,8 +2399,9 @@ function autosizeInput() {
 
 function updateComposerHint() {
   const hasText = Boolean(dom.input.value.trim());
-  dom.inputHint.textContent = hasText ? 'Enter 发送 · Shift + Enter 换行' : '';
-  dom.sendBtn.disabled = !hasText && !state.streaming;
+  const hasImages = state.pendingImages.length > 0;
+  dom.inputHint.textContent = hasText || hasImages ? 'Enter 发送 · Shift + Enter 换行' : '';
+  dom.sendBtn.disabled = !hasText && !hasImages && !state.streaming;
 }
 
 /* ============================================================
@@ -2363,8 +2433,10 @@ function estimateConversationTokens(conv) {
   const systemPrompt = state.settings.systemPrompt.trim();
   if (systemPrompt) total += estimateTextTokens(systemPrompt) + 4;
   for (const message of conv.messages) {
-    if (message.error || !String(message.content || '').trim()) continue;
-    total += estimateTextTokens(message.content) + 4;
+    if (message.error) continue;
+    const imageTokens = Array.isArray(message.images) ? message.images.length * 1024 : 0;
+    if (!String(message.content || '').trim() && !imageTokens) continue;
+    total += estimateTextTokens(message.content) + imageTokens + 4;
   }
   return total;
 }
@@ -2399,8 +2471,10 @@ function contextStatsFor(conv) {
       let used = Number(anchor.tokens.prompt) + Number(anchor.tokens.completion || 0);
       for (let cursor = index + 1; cursor < conv.messages.length; cursor += 1) {
         const message = conv.messages[cursor];
-        if (!message.content || message.error) continue;
-        used += estimateTextTokens(message.content) + 4;
+        if (message.error) continue;
+        const imageTokens = Array.isArray(message.images) ? message.images.length * 1024 : 0;
+        if (!message.content && !imageTokens) continue;
+        used += estimateTextTokens(message.content) + imageTokens + 4;
       }
       return {
         used,
@@ -2466,10 +2540,36 @@ function historyForApi(conv, excludeId, cutoffId = null) {
   if (state.settings.systemPrompt.trim()) {
     messages.push({ role: 'system', content: state.settings.systemPrompt.trim() });
   }
+  // Keep the request body bounded when a long conversation contains many
+  // images: only the newest MAX_HISTORY_IMAGES are sent as binary blocks.
+  const imageMessageIds = new Set();
+  let imageBudget = MAX_HISTORY_IMAGES;
+  const cutoffIndex = cutoffId ? conv.messages.findIndex((m) => m.id === cutoffId) : -1;
+  const budgetStart = cutoffIndex >= 0 ? cutoffIndex : conv.messages.length - 1;
+  for (let i = budgetStart; i >= 0 && imageBudget > 0; i -= 1) {
+    const candidate = conv.messages[i];
+    if (candidate?.role !== 'user' || !Array.isArray(candidate.images) || !candidate.images.length) continue;
+    imageMessageIds.add(candidate.id);
+    imageBudget -= candidate.images.length;
+  }
   for (const message of conv.messages) {
     if (message.id === excludeId || message.error) continue;
-    if (!message.content.trim()) continue;
-    messages.push({ role: message.role, content: message.content });
+    const images = message.role === 'user' && Array.isArray(message.images) && imageMessageIds.has(message.id)
+      ? message.images
+      : [];
+    const omittedImage = message.role === 'user' && Array.isArray(message.images) && message.images.length && !images.length;
+    const text = String(message.content || '').trim() || (omittedImage ? '[图片已省略]' : '');
+    if (!text && !images.length) continue;
+    if (images.length) {
+      const content = [];
+      if (text) content.push({ type: 'text', text });
+      for (const image of images) {
+        content.push({ type: 'image_url', image_url: { url: image.dataUrl, detail: 'auto' } });
+      }
+      messages.push({ role: 'user', content });
+    } else {
+      messages.push({ role: message.role, content: text });
+    }
     if (cutoffId && message.id === cutoffId) break;
   }
   return messages;
@@ -2546,8 +2646,11 @@ async function streamAssistant(conv, assistant, options = {}) {
     assistant.searching = false;
     requestMessages.push({ role: 'assistant', content: assistant.content, prefix: true });
   }
+  const hasImageInput = requestMessages.some(
+    (message) => Array.isArray(message.content) && message.content.some((block) => block?.type === 'image_url'),
+  );
   const body = {
-    model: webSearch ? 'deepseek-flash' : assistant.model,
+    model: webSearch || hasImageInput ? 'deepseek-flash' : assistant.model,
     messages: requestMessages,
     temperature: state.settings.temperature,
     reasoning_effort: continuation ? 'none' : deepThink ? 'high' : 'none',
@@ -2758,9 +2861,120 @@ function addAssistantSources(assistant, items) {
   return changed;
 }
 
-async function sendMessage(rawText) {
+function readBlobAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('图片读取失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function decodeImage(file) {
+  if ('createImageBitmap' in window) return createImageBitmap(file);
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('图片解码失败'));
+      image.src = url;
+    });
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function prepareImage(file) {
+  const source = await decodeImage(file);
+  const sourceWidth = source.width || source.naturalWidth || 1;
+  const sourceHeight = source.height || source.naturalHeight || 1;
+  const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(source, 0, 0, width, height);
+  if (source.close) source.close();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', IMAGE_QUALITY));
+  if (!blob) throw new Error('图片压缩失败');
+  return {
+    id: uid(),
+    name: String(file.name || '图片').slice(0, 120) || '图片',
+    dataUrl: await readBlobAsDataUrl(blob),
+    width,
+    height,
+    size: blob.size,
+  };
+}
+
+function renderImageTray() {
+  const images = Array.isArray(state.pendingImages) ? state.pendingImages : [];
+  dom.imageTray.hidden = images.length === 0;
+  dom.imageTray.innerHTML = images
+    .map(
+      (image, index) => `<div class="image-preview-item">
+        <img src="${escapeHtml(image.dataUrl)}" alt="${escapeHtml(image.name)}" title="${escapeHtml(image.name)}" />
+        <button type="button" class="image-remove" data-remove-image="${index}" aria-label="移除图片">${icon('i-x')}</button>
+      </div>`,
+    )
+    .join('');
+  updateComposerHint();
+}
+
+async function addImageFiles(fileList) {
+  if (state.streaming) {
+    toast('请等待当前回答完成后再添加图片', 'error');
+    return;
+  }
+  const files = Array.from(fileList || []);
+  const remaining = MAX_IMAGES - state.pendingImages.length;
+  if (remaining <= 0) {
+    toast(`最多添加 ${MAX_IMAGES} 张图片`, 'error');
+    return;
+  }
+  const picked = files.slice(0, remaining);
+  if (files.length > remaining) toast(`最多添加 ${MAX_IMAGES} 张图片，已保留前 ${remaining} 张`, 'error');
+  for (const file of picked) {
+    if (!/^image\/(jpeg|png|gif|webp)$/i.test(file.type)) {
+      toast(`不支持的图片格式：${file.name || '未知文件'}`, 'error');
+      continue;
+    }
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      toast(`图片过大（单张最多 ${Math.round(MAX_IMAGE_FILE_BYTES / 1024 / 1024)} MB）`, 'error');
+      continue;
+    }
+    try {
+      state.pendingImages.push(await prepareImage(file));
+    } catch (error) {
+      toast(`图片处理失败：${error.message || '未知错误'}`, 'error');
+    }
+  }
+  if (state.pendingImages.length) {
+    if (normalizeModel(state.settings.model) !== 'deepseek-flash') {
+      state.settings.model = 'deepseek-flash';
+      saveSettings();
+      updateModelUI();
+      toast('图片理解需要 DeepSeek-V4.1-Flash，已切换');
+    }
+    renderImageTray();
+  }
+}
+
+function clearPendingImages() {
+  state.pendingImages = [];
+  renderImageTray();
+}
+
+async function sendMessage(rawText, imageList = null) {
   const text = String(rawText || '').trim();
-  if (!text || state.streaming) return;
+  const images = normalizeImages(imageList || state.pendingImages);
+  if ((!text && !images.length) || state.streaming) return;
 
   if (!hasApiKey()) {
     toast('请先配置 DeepSeek API Key', 'error');
@@ -2768,11 +2982,17 @@ async function sendMessage(rawText) {
     return;
   }
 
+  if (images.length && normalizeModel(state.settings.model) !== 'deepseek-flash') {
+    state.settings.model = 'deepseek-flash';
+    saveSettings();
+    updateModelUI();
+  }
+
   let conv = activeConversation();
   if (!conv) {
     conv = {
       id: uid(),
-      title: titleFrom(text),
+      title: titleFrom(text || images[0]?.name || '图片对话'),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: [],
@@ -2785,18 +3005,22 @@ async function sendMessage(rawText) {
     id: uid(),
     role: 'user',
     content: text,
+    images: images.length ? images : undefined,
     ts: Date.now(),
     model: state.settings.model,
   };
   const assistant = createAssistantMessage();
+  if (userMessage.images) assistant.model = 'deepseek-flash';
 
   conv.messages.push(userMessage, assistant);
   syncActiveBranchTails(conv);
   conv.updatedAt = Date.now();
-  if (conv.title === '新对话' || !conv.title) conv.title = titleFrom(text);
-  if (conv.messages.filter((m) => m.role === 'user').length === 1) conv.title = titleFrom(text);
+  const titleSeed = text || images[0]?.name || '图片对话';
+  if (conv.title === '新对话' || !conv.title) conv.title = titleFrom(titleSeed);
+  if (conv.messages.filter((m) => m.role === 'user').length === 1) conv.title = titleFrom(titleSeed);
 
   dom.input.value = '';
+  clearPendingImages();
   autosizeInput();
   state.activeId = conv.id;
   persist();
@@ -3048,7 +3272,10 @@ function saveSettingsFromModal() {
   state.settings.apiKey = dom.apiKeyInput.value.trim();
   state.settings.baseUrl = base;
   state.settings.model = normalizeModel(dom.modelSelect.value);
-  if (state.settings.model !== 'deepseek-flash') state.settings.webSearch = false;
+  if (state.settings.model !== 'deepseek-flash') {
+    state.settings.webSearch = false;
+    if (state.pendingImages.length) clearPendingImages();
+  }
   state.settings.temperature = Number(dom.tempInput.value);
   state.settings.systemPrompt = dom.systemPromptInput.value.trim();
 
@@ -3066,6 +3293,8 @@ async function clearAllData() {
   state.conversations = [];
   state.activeId = null;
   state.settings = { ...DEFAULT_SETTINGS };
+  state.pendingImages = [];
+  renderImageTray();
   try {
     conversationWriteChain = conversationWriteChain.catch(() => {});
     await conversationWriteChain;
@@ -3807,6 +4036,19 @@ function wireEvents() {
 
   dom.thinkToggle.addEventListener('click', toggleDeepThink);
   dom.searchToggle.addEventListener('click', toggleWebSearch);
+  dom.imageBtn.addEventListener('click', () => dom.imageInput.click());
+  dom.imageInput.addEventListener('change', async () => {
+    await addImageFiles(dom.imageInput.files);
+    dom.imageInput.value = '';
+  });
+  dom.imageTray.addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove-image]');
+    if (!remove) return;
+    const index = Number(remove.dataset.removeImage);
+    if (!Number.isInteger(index)) return;
+    state.pendingImages.splice(index, 1);
+    renderImageTray();
+  });
 
   dom.input.addEventListener('input', autosizeInput);
   dom.input.addEventListener('compositionstart', () => {
@@ -3828,7 +4070,7 @@ function wireEvents() {
       stopStreaming();
       return;
     }
-    sendMessage(dom.input.value);
+    sendMessage(dom.input.value, state.pendingImages);
   });
 
   $$('.suggestion').forEach((button) => {

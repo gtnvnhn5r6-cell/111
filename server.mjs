@@ -139,20 +139,46 @@ function requestBase(req) {
   return API_BASE;
 }
 
+function sanitizeContent(role, content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content) || role !== 'user') return '';
+  const blocks = [];
+  let imageCount = 0;
+  for (const block of content.slice(0, 12)) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+      blocks.push({ type: 'text', text: block.text.slice(0, 200000) });
+      continue;
+    }
+    if (block.type !== 'image_url' || imageCount >= 16) continue;
+    const url = String(block.image_url?.url || '');
+    const isDataImage = /^data:image\/(?:jpeg|png|gif|webp);base64,[a-z0-9+/=]+$/i.test(url);
+    const isRemoteImage = /^https?:\/\//i.test(url) && url.length <= 8192;
+    if (!isDataImage && !isRemoteImage) continue;
+    const detail = ['low', 'high', 'original', 'auto'].includes(block.image_url?.detail)
+      ? block.image_url.detail
+      : 'auto';
+    blocks.push({ type: 'image_url', image_url: { url, detail } });
+    imageCount += 1;
+  }
+  return blocks;
+}
+
 function sanitizeMessages(input) {
   if (!Array.isArray(input)) return [];
   return input
     .filter((m) => m && typeof m === 'object')
     .map((m) => {
       const role = ['system', 'user', 'assistant'].includes(m.role) ? m.role : 'user';
-      const message = {
-        role,
-        content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
-      };
+      const content = sanitizeContent(role, m.content);
+      const message = { role, content };
       if (role === 'assistant' && m.prefix === true) message.prefix = true;
       return message;
     })
-    .filter((m) => m.content.length > 0 || m.role === 'assistant')
+    .filter((m) => {
+      const hasContent = Array.isArray(m.content) ? m.content.length > 0 : m.content.length > 0;
+      return hasContent || (m.role === 'assistant' && m.prefix === true);
+    })
     .slice(-80);
 }
 
@@ -186,7 +212,7 @@ async function handleChat(req, res) {
 
   let body;
   try {
-    body = await readJsonBody(req);
+    body = await readJsonBody(req, 32 * 1024 * 1024);
   } catch (error) {
     return json(res, error.status || 400, { error: { message: error.message } });
   }
