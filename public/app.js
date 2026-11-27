@@ -1203,7 +1203,9 @@ function paintAssistant(article, message, isLastAssistant) {
   }
 
   if (!message.streaming && message.stopped && !String(message.content || '').trim()) {
-    content.innerHTML = '<p class="stopped-placeholder">已停止生成，可点击“继续生成”继续</p>';
+    content.innerHTML = `<p class="stopped-placeholder">${
+      message.error ? '回答中断，已保留这轮对话，可点击“继续生成”继续' : '已停止生成，可点击“继续生成”继续'
+    }</p>`;
   } else {
     content.innerHTML = renderMarkdown(message.content);
   }
@@ -2811,13 +2813,26 @@ async function streamAssistant(conv, assistant, options = {}) {
       renderSidebar();
       if (!options.suppressErrorToast) toast('已停止生成，可点“继续生成”');
     } else {
-      assistant.error = error.message || '未知错误';
+      const message = error.message || '未知错误';
+      const networkError =
+        error instanceof TypeError ||
+        !navigator.onLine ||
+        /fetch|network|连接|中断|超时|failed to fetch/i.test(message);
+      assistant.error = message;
+      // A network interruption can happen before the first token, or between
+      // chunks. Keep the partial answer (even if empty) so the user can either
+      // read what arrived or press "继续生成" instead of losing the turn.
+      if (networkError || assistant.content || assistant.reasoning) {
+        assistant.stopped = true;
+      }
       syncTurnBranch(conv, assistant);
       conv.updatedAt = Date.now();
       persist();
       renderConversation({ keepScroll: true });
       renderSidebar();
-      if (!options.suppressErrorToast) toast(assistant.error, 'error');
+      if (!options.suppressErrorToast) {
+        toast(networkError ? '网络中断，已保留当前回答；可点“继续生成”' : message, 'error');
+      }
     }
   } finally {
     if (state.streaming?.msgId === assistant.id) state.streaming = null;
